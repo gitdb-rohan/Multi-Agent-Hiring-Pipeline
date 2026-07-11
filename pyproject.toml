@@ -1,0 +1,25 @@
+[project]
+name = "end-to-end-hiring-pipeline"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.5",
+    "asyncpg>=0.31.0",
+    "chromadb>=1.5.9",
+    "fastapi>=0.139.0",
+    "google-genai>=2.11.0",
+    "greenlet>=3.5.3",
+    "mcp>=1.28.1",
+    "onnxruntime>=1.27.0",
+    "openai>=2.45.0",
+    "opentelemetry-api>=1.43.0",
+    "opentelemetry-exporter-otlp>=1.43.0",
+    "opentelemetry-sdk>=1.43.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "redis>=8.0.1",
+    "sqlalchemy>=2.0.51",
+    "uvicorn>=0.51.0",
+]

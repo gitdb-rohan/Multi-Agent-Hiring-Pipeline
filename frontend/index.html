@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="page-title">Loading...</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-mesh"></div>
+    
+    <header>
+        <div class="logo">
+            <span class="logo-icon"></span>
+            <h1 id="brand-name">Loading...</h1>
+        </div>
+        <nav>
+            <button class="nav-btn active" data-target="dashboard">Dashboard</button>
+            <button class="nav-btn" data-target="review-queue">Review Queue <span id="review-badge" class="badge hidden">0</span></button>
+        </nav>
+    </header>
+
+    <main>
+        <!-- Dashboard Section -->
+        <section id="dashboard" class="view-section active">
+            <div class="split-layout">
+                <!-- Left Panel: Input Form -->
+                <div class="glass-panel input-panel">
+                    <h2>Launch Pipeline</h2>
+                    <p class="subtitle">Define your hiring goal and provide a job description to trigger the multi-agent system.</p>
+                    
+                    <form id="pipeline-form">
+                        <div class="form-group">
+                            <label for="goal-text">Hiring Goal</label>
+                            <input type="text" id="goal-text" placeholder="e.g. Find 5 senior python developers..." required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="jd-text">Raw Job Description</label>
+                            <textarea id="jd-text" rows="10" placeholder="Paste the full job description here..." required></textarea>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="top-k">Number of Candidates to Shortlist (Top-K)</label>
+                            <input type="number" id="top-k" value="5" min="1" max="20" required>
+                        </div>
+                        
+                        <button type="submit" class="primary-btn" id="submit-btn">
+                            <span class="btn-text">Execute Agents</span>
+                            <div class="spinner hidden"></div>
+                        </button>
+                    </form>
+                </div>
+                
+                <!-- Right Panel: Execution Timeline -->
+                <div class="glass-panel timeline-panel">
+                    <div class="panel-header">
+                        <h2>Execution Timeline</h2>
+                        <span id="run-status" class="status-badge pending">Awaiting Input</span>
+                    </div>
+                    
+                    <div class="timeline-container" id="timeline">
+                        <div class="empty-state">
+                            <div class="pulse-ring"></div>
+                            <p>System idle. Waiting for pipeline execution...</p>
+                        </div>
+                        <!-- Timeline items injected here -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Bottom Panel: Results Summary -->
+            <div id="results-panel" class="glass-panel results-panel hidden">
+                <h2>Generated Outreach</h2>
+                <div id="results-content" class="results-grid">
+                    <!-- Cards injected here -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Review Queue Section -->
+        <section id="review-queue" class="view-section">
+            <div class="glass-panel">
+                <h2>Human Review Queue</h2>
+                <p class="subtitle">Agent outputs flagged by the G-Eval layer requiring human oversight.</p>
+                
+                <div id="review-container" class="review-grid">
+                    <!-- Review items injected here -->
+                    <div class="empty-state">
+                        <p>No items in the review queue.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
