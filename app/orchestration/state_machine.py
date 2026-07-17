@@ -3,6 +3,7 @@ Custom orchestration state machine.
 Drives the pipeline through: PENDING → PLANNING → DISPATCHING → RUNNING → EVALUATING → (DONE | NEEDS_REVIEW | FAILED)
 """
 from __future__ import annotations
+import json
 import time
 import logging
 import asyncio
@@ -17,6 +18,7 @@ from app.agents.candidate_scorer import CandidateScorer, CandidateScorerRequest
 from app.agents.outreach_drafter import OutreachDrafter, OutreachDrafterRequest
 from app.schemas.jd import ExtractedJD
 from app.schemas.candidate import ScoredCandidate
+from app.evaluation.geval import evaluate_agent_output
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,13 @@ AGENT_REGISTRY = {
     "JDAnalyser": JDAnalyser,
     "CandidateScorer": CandidateScorer,
     "OutreachDrafter": OutreachDrafter,
+}
+
+# Human-readable task descriptions used by G-Eval to understand what each agent is supposed to do
+TASK_DESCRIPTIONS = {
+    "JDAnalyser": "Extract structured job requirements (skills, experience band, red flags) from raw JD text",
+    "CandidateScorer": "Score and rank candidates against extracted job requirements using vector similarity and LLM re-ranking",
+    "OutreachDrafter": "Draft personalized, professional outreach emails for shortlisted candidates",
 }
 
 
@@ -100,7 +109,7 @@ class PipelineStateMachine:
                     "graph_summary": self.task_graph.summary(),
                 }
 
-            # Evaluating phase
+            # Evaluating phase — check if any eval results flagged for review
             await self._transition(PipelineState.EVALUATING)
             needs_review = any(r.get("needs_human_review") for r in self.eval_results)
 
@@ -148,6 +157,11 @@ class PipelineStateMachine:
             # Store output in context for downstream tasks
             self._store_result(task, result)
 
+            # Run G-Eval on the agent's output
+            eval_result = await self._evaluate_task(task, result)
+            if eval_result:
+                self.eval_results.append(eval_result.model_dump())
+
             summary = self._summarize_result(task, result)
             await event_emitter.emit_agent_completed(self.run_id, task.agent, task.name, elapsed, summary)
 
@@ -161,6 +175,62 @@ class PipelineStateMachine:
             else:
                 task.status = TaskStatus.PENDING  # re-queue for retry
                 logger.warning(f"[{self.run_id}] Task {task.name} failed (attempt {task.retry_count}): {e}")
+
+    async def _evaluate_task(self, task: Task, result: Any):
+        """
+        Run G-Eval (LLM-as-judge) on a completed task's output.
+        Scores relevance, faithfulness, completeness and flags for human review
+        if any dimension falls below the agent's threshold.
+        """
+        try:
+            input_ctx = self._get_eval_input_context(task)
+            output_str = self._get_eval_output_string(task, result)
+
+            eval_result = await evaluate_agent_output(
+                agent_name=task.agent,
+                task_id=task.id,
+                task_description=TASK_DESCRIPTIONS.get(task.agent, task.name),
+                input_context=input_ctx,
+                agent_output=output_str,
+            )
+
+            logger.info(
+                f"[{self.run_id}] G-Eval for {task.agent}: "
+                f"rel={eval_result.relevance:.2f} faith={eval_result.faithfulness:.2f} "
+                f"comp={eval_result.completeness:.2f} "
+                f"review={'YES' if eval_result.needs_human_review else 'no'}"
+            )
+
+            # Emit SSE event if flagged for review
+            if eval_result.needs_human_review:
+                await event_emitter.emit_eval_flagged(
+                    self.run_id, task.agent, eval_result.review_reason or "Below threshold"
+                )
+
+            return eval_result
+
+        except Exception as e:
+            logger.error(f"[{self.run_id}] G-Eval failed for {task.agent}: {e}")
+            return None
+
+    def _get_eval_input_context(self, task: Task) -> str:
+        """Serialize the input context relevant to this task for G-Eval."""
+        if task.agent == "JDAnalyser":
+            return self.context.get("raw_jd_text", "")
+        elif task.agent == "CandidateScorer":
+            return json.dumps(self.context.get("extracted_jd", {}), default=str)
+        elif task.agent == "OutreachDrafter":
+            return json.dumps({
+                "jd": self.context.get("extracted_jd", {}),
+                "candidates": self.context.get("scored_candidates", [])[:3],
+            }, default=str)
+        return ""
+
+    def _get_eval_output_string(self, task: Task, result: Any) -> str:
+        """Serialize the agent's output for G-Eval."""
+        if hasattr(result, "model_dump"):
+            return json.dumps(result.model_dump(), default=str)
+        return str(result)
 
     def _build_request(self, task: Task) -> Any:
         """Build the agent-specific request from the shared context."""
@@ -216,3 +286,4 @@ class PipelineStateMachine:
         elif task.agent == "OutreachDrafter":
             return f"Drafted {len(result.emails)} outreach emails"
         return "Completed"
+

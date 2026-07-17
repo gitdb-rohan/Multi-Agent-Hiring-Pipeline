@@ -37,6 +37,33 @@ async def get_candidate_profile(candidate_id: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+
+@mcp.tool()
+async def upsert_candidate(candidate_id: str, document: str, metadata_json: str) -> str:
+    """
+    Upserts a candidate into the vector database.
+    If a candidate with the same ID already exists, their entry is replaced entirely.
+    This enables dedup: use a deterministic ID (e.g. derived from email) and re-submitting
+    a candidate automatically overwrites the old entry.
+
+    Args:
+        candidate_id: Unique identifier for the candidate.
+        document: Text representation of the candidate for embedding.
+        metadata_json: JSON string of metadata (name, email, years_of_experience, etc.)
+    """
+    try:
+        metadata = json.loads(metadata_json)
+        vector_store.upsert_candidate(
+            candidate_id=candidate_id,
+            document=document,
+            metadata=metadata,
+        )
+        return json.dumps({"status": "upserted", "candidate_id": candidate_id})
+    except Exception as e:
+        logger.error(f"Upsert failed for {candidate_id}: {e}")
+        return json.dumps({"error": str(e)})
+
+
 if __name__ == "__main__":
     # Run the server on stdio
     mcp.run()

@@ -1,5 +1,11 @@
 """
-Planner Agent — decomposes a hiring goal into an ordered TaskGraph and dispatches execution.
+Planner Agent — builds the standard hiring pipeline TaskGraph and dispatches execution.
+
+Currently uses a deterministic task graph (extract_jd → score_candidates → draft_outreach).
+This is a deliberate choice: the pipeline steps are well-defined and don't benefit from
+LLM-driven decomposition. The TaskGraph architecture supports future extension to dynamic
+planning (conditional tasks, re-planning on failure) if needed.
+
 The Planner never talks to MCP servers directly; it only knows task graphs and agent contracts.
 """
 import logging
@@ -13,10 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerRequest(BaseModel):
-    run_id: str = Field(description="The unique identifier for this pipeline run")
-    goal_text: str = Field(description="The recruiter's hiring goal in plain English")
-    raw_jd_text: str = Field(description="The raw job description text")
-    top_k: int = Field(default=5, description="Number of top candidates to shortlist")
+    run_id: str
+    goal_text: str
+    raw_jd_text: str
+    top_k: int = 5
+    strictness: float = 0.8
+    auto_approve: bool = False
 
 
 class PlannerResponse(BaseModel):
@@ -74,10 +82,14 @@ class PlannerAgent(BaseAgent):
 
         # 2. Create state machine and seed context
         sm = PipelineStateMachine(task_graph)
-        sm.context["raw_jd_text"] = request.raw_jd_text
-        sm.context["goal_text"] = request.goal_text
-        sm.context["top_k"] = request.top_k
-
+        # Seed the shared context with initial data
+        sm.context = {
+            "goal_text": request.goal_text,
+            "raw_jd_text": request.raw_jd_text,
+            "top_k": request.top_k,
+            "strictness": request.strictness,
+            "auto_approve": request.auto_approve,
+        }
         # 3. Run the pipeline
         result = await sm.run()
 

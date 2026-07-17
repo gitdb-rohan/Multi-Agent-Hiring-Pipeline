@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CHROMA_PERSIST_DIR: str = "./data/chroma"
 
+    # Candidate ingestion
+    RESUME_WATCH_DIR: str = "./data/resumes"
+    RESUME_PROCESSED_DIR: str = "./data/resumes/processed"
+
     # Rate limiting
     EMAIL_SEND_RATE_PER_MINUTE: int = 10
 

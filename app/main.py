@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import routes_pipeline, routes_review
+from app.api import routes_pipeline, routes_review, routes_candidates
 from app.config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -24,9 +24,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.api import routes_pipeline, routes_review, routes_candidates, routes_audit, auth
+
 # Include routers
+app.include_router(auth.router)
 app.include_router(routes_pipeline.router)
 app.include_router(routes_review.router)
+app.include_router(routes_candidates.router)
+app.include_router(routes_audit.router)
 
 @app.get("/config/branding", tags=["config"])
 async def get_branding():

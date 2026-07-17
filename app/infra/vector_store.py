@@ -28,6 +28,13 @@ class VectorStore:
             name=self.collection_name,
             embedding_function=self.ef
         )
+        
+        # Get or create email templates collection
+        self.template_collection_name = "email_templates"
+        self.template_collection = self.client.get_or_create_collection(
+            name=self.template_collection_name,
+            embedding_function=self.ef
+        )
 
     def upsert_candidate(self, candidate_id: str, document: str, metadata: dict = None):
         """Upserts a candidate's text representation into the vector store."""
@@ -79,6 +86,26 @@ class VectorStore:
                 "metadata": results['metadatas'][0]
             }
         return None
+
+    def upsert_template(self, template_id: str, intent: str, template_text: str):
+        self.template_collection.upsert(
+            ids=[template_id],
+            documents=[intent],
+            metadatas=[{"template_text": template_text}]
+        )
+        
+    def search_templates(self, intent_query: str, top_k: int = 2) -> list[str]:
+        results = self.template_collection.query(
+            query_texts=[intent_query],
+            n_results=top_k
+        )
+        templates = []
+        if results and results['ids'] and results['ids'][0]:
+            for i in range(len(results['ids'][0])):
+                meta = results['metadatas'][0][i]
+                if meta and "template_text" in meta:
+                    templates.append(meta["template_text"])
+        return templates
 
 # Singleton instance
 vector_store = VectorStore()

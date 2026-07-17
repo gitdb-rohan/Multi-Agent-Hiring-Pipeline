@@ -26,13 +26,17 @@ This document is the **single source of truth** for the project: architecture, t
 
 ## 2. Plain-English System Overview
 
-1. A user (recruiter) submits a **hiring goal** + a **raw job description** + access to a **candidate pool**.
-2. The **Planner Agent** decomposes the goal into an ordered task graph and dispatches tasks to workers.
-3. **JD Analyser** extracts structured requirements (skills, experience band, red flags) from the raw JD.
-4. **Candidate Scorer** semantically matches candidates against those requirements (vector search) then LLM-re-ranks the top-K.
-5. **Outreach Drafter** writes a personalized cold email per shortlisted candidate.
-6. The **Evaluation Layer** scores every agent's output (relevance, faithfulness, completeness) and flags anything under a confidence threshold for **human review** — nothing low-confidence leaves the system unreviewed.
-7. Everything streams live to the frontend over SSE; final artifacts land in Postgres; emails are queued through Redis to respect rate limits.
+1. **Candidate Ingestion** — Resumes (PDF/DOCX) are uploaded via API, batch-imported from a folder, or continuously watched via a directory watcher. Each resume is parsed → LLM-extracted into a structured `CandidateProfile` → deduplicated by email → upserted into ChromaDB.
+1b. **Authentication** — HR must register and log in to an account secured via Postgres hashing and tokens before accessing the system.
+2. A user (recruiter) submits a **hiring goal** + a **raw job description**.
+3. The **Planner Agent** builds a deterministic task graph (`extract_jd → score_candidates → draft_outreach`) and dispatches it through the state machine.
+4. **JD Analyser** extracts structured requirements (skills, experience band, red flags) from the raw JD.
+5. **Candidate Scorer** uses **vector similarity** (ChromaDB, cosine similarity from L2 distance) for broad recall, then an **LLM re-ranker** for precision — the LLM explicitly extracts `matched_skills` vs. `missing_skills` against JD requirements, which acts as the exact-skill check without needing a separate keyword index. Final score = 40% semantic + 60% LLM re-rank.
+6. **Outreach Drafter** writes a personalized cold email per shortlisted candidate. Includes a **RAG component** to search ChromaDB for approved company email templates to ensure brand consistency. HR can also use the **Manual Outreach** tab to draft one-off emails using candidate emails directly, which will be automatically wrapped in standard HTML headers/footers. Includes a **RAG component** to search ChromaDB for approved company email templates to ensure brand consistency. HR can also use the **Manual Outreach** tab to draft one-off emails using candidate emails directly, which will be automatically wrapped in standard HTML headers/footers.
+7. The **Evaluation Layer (G-Eval)** runs after each agent, scoring every output on relevance, faithfulness, and completeness. Anything below the agent's threshold is flagged for **human review** — nothing low-confidence leaves the system unreviewed.
+8. Everything streams live to the frontend over SSE; final artifacts (JDs, scored candidates, emails, eval results) are persisted to Postgres; emails are rate-limited through Redis.
+9. **Audit & Review** — All approved emails, rejections, and manual drafts are tracked in an `Audit Log` tab for accountability. The frontend features a full **Apple-style Liquid Glass Dark Mode UI**.
+9. **Audit & Review** — All approved emails, rejections, and manual drafts are tracked in an  tab for accountability. The frontend features a full **Apple-style Liquid Glass Dark Mode UI**.
 
 ---
 
@@ -194,10 +198,11 @@ The Planner runs a small explicit **state machine** rather than a generic graph 
 PENDING → PLANNING → DISPATCHING → RUNNING → EVALUATING → (DONE | NEEDS_REVIEW | FAILED)
 ```
 
-- **Planner** produces a `TaskGraph`: ordered/parallel tasks with explicit dependencies (`score_candidates` depends on `extract_jd` completing).
-- Each task dispatch goes through `BaseAgent.run()`, which wraps: retry w/ exponential backoff → OpenTelemetry span → Pydantic validation of output → hand-off to Evaluation Layer.
-- Failures bubble to Planner, which can re-plan (e.g., re-prompt JD Analyser with a repair instruction) up to N times before marking `FAILED`.
-- State + progress is emitted as events (`events.py`) consumed by the SSE endpoint — the frontend sees exactly the state machine transitions live.
+- **Planner** currently builds a **fixed task graph** (`extract_jd → score_candidates → draft_outreach`) representing the standard hiring pipeline. This is a deliberate design choice — the pipeline steps are well-defined and don't benefit from LLM-driven decomposition. The `TaskGraph` architecture supports future extension to dynamic planning (conditional tasks, re-planning on failure) if needed.
+- Each task dispatch goes through `BaseAgent.run()`, which wraps: retry w/ exponential backoff → OpenTelemetry span → Pydantic validation of output → **G-Eval scoring** (LLM-as-judge).
+- On task failure, the state machine retries with exponential backoff up to N times before marking `FAILED`.
+- After each agent completes, G-Eval scores the output on relevance/faithfulness/completeness. If any dimension falls below the agent's threshold, the output is flagged for human review and an `eval_flagged` SSE event is emitted.
+- State + progress is emitted as events (`events.py`) consumed by the SSE endpoint — the frontend sees exactly the state machine transitions and eval flags live.
 
 ---
 
@@ -209,7 +214,9 @@ Three independent MCP servers, each a separate deployable process (stdio for loc
 |---|---|---|
 | `jd-parser-server` | `parse_raw_jd`, `normalize_skill_taxonomy` | Pure LLM + skill taxonomy lookup table |
 | `candidate-db-server` | `vector_search_candidates`, `get_candidate_profile`, `upsert_candidate` | ChromaDB |
-| `email-server` | `send_outreach_email`, `check_rate_limit` | SMTP/provider API + Redis token bucket |
+| `email-server` | `send_outreach_email`, `check_rate_limit` | Redis token bucket (rate limiting) + in-memory store |
+
+> **Note on email-server:** Emails are currently stored in-memory rather than sent via SMTP. The rate-limiting (Redis token bucket) and MCP interface are production-ready — swap the `send_outreach_email` tool body for SMTP/SendGrid/SES in production.
 
 Design rules: each tool is minimal and single-purpose (avoid sprawling do-everything tools), every tool call is treated as a security boundary (input validation + auth), and servers are versioned/pinned (e.g., `jd-parser-server:v1.0.0`) so schema drift doesn't silently break agents.
 

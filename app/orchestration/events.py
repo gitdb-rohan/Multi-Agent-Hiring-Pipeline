@@ -30,10 +30,12 @@ class PipelineEvent(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     data: dict[str, Any] = Field(default_factory=dict)
 
-    def to_sse(self) -> str:
-        """Format as a Server-Sent Event string."""
-        payload = self.model_dump_json()
-        return f"event: {self.event_type.value}\ndata: {payload}\n\n"
+    def to_sse(self) -> dict:
+        """Format as a dictionary for EventSourceResponse."""
+        return {
+            "event": self.event_type.value,
+            "data": self.model_dump_json()
+        }
 
 
 class EventEmitter:

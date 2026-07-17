@@ -1,75 +1,68 @@
 import json
 import logging
 from typing import List
+
 from pydantic import BaseModel
+from mcp import ClientSession
+from mcp.client.stdio import stdio_client, StdioServerParameters
 from contextlib import AsyncExitStack
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
 from app.agents.base import BaseAgent, with_retry
-from app.schemas.jd import ExtractedJD
-from app.schemas.candidate import ScoredCandidate
-from app.schemas.outreach import OutreachEmail
 from app.llm.provider_adapter import get_llm_provider
+from app.schemas.outreach import OutreachEmail
+from app.schemas.candidate import ScoredCandidate
+from app.schemas.jd import ExtractedJD
+from app.infra.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
-
 
 class OutreachDrafterRequest(BaseModel):
     jd: ExtractedJD
     scored_candidates: List[ScoredCandidate]
 
-
 class OutreachDrafterResponse(BaseModel):
     emails: List[OutreachEmail]
-    send_results: List[dict]
-
+    send_results: list = []
 
 class OutreachDrafter(BaseAgent):
-    """
-    Agent responsible for drafting personalized outreach emails for shortlisted candidates,
-    then sending them via the email-server MCP (rate-limited).
-    """
-
     def __init__(self):
         super().__init__(name="OutreachDrafter")
-        self.server_params = StdioServerParameters(
-            command="uv",
-            args=["run", "python", "-m", "app.mcp_servers.email_server.server"],
-            env=None,
-        )
         self.llm = get_llm_provider()
 
     @with_retry(max_retries=3, base_delay=2.0)
     async def _execute(self, request: OutreachDrafterRequest) -> OutreachDrafterResponse:
         logger.info(f"{self.name} drafting emails for {len(request.scored_candidates)} candidates...")
+        
+        is_manual = "Intent:" in request.jd.role_title
+        cand_name = self.context.get('cand_name', 'Candidate')
+        
+        intent_query = request.jd.role_title if is_manual else "reach out to candidate"
+        templates = vector_store.search_templates(intent_query, top_k=2)
+        template_text = "\n---\n".join(templates) if templates else "None available."
 
-        # 1. Draft emails using LLM
         system_prompt = f"""
 You are a professional technical recruiter writing personalized cold outreach emails.
-Role: {request.jd.role_title}
-Required Skills: {', '.join(request.jd.required_skills)}
+Role context / Instructions: {request.jd.role_title}
 
-Write a warm, professional, concise email (under 200 words) that:
-- References the candidate's specific skills and experience
-- Explains why they'd be a great fit for this specific role
-- Has a clear call to action
-- Feels human, not templated
+IMPORTANT: The system will automatically wrap your generated body in a standard company HTML header and footer.
+You must ONLY generate the body text. Do not include signatures like "Best, HR Team" or headers like "Subject:".
+Output only the raw text/HTML body.
 
-Do NOT use generic filler. Every sentence must reference something specific about the candidate.
+Here are some standard company email templates you should try to follow for tone and structure:
+{template_text}
 """
 
         emails: List[OutreachEmail] = []
         for candidate in request.scored_candidates:
             prompt = f"""
 Candidate ID: {candidate.candidate_id}
+Candidate Name: {cand_name}
 Matched Skills: {', '.join(candidate.matched_skills)}
 Missing Skills: {', '.join(candidate.missing_skills)}
 Score Rationale: {candidate.rationale}
 Final Score: {candidate.final_score}
 
-Draft a personalized outreach email for this candidate.
+Draft the subject line and the body of the personalized outreach email for {cand_name}.
 """
             try:
                 email = await self.llm.generate_structured_output(
@@ -77,35 +70,10 @@ Draft a personalized outreach email for this candidate.
                     response_model=OutreachEmail,
                     system_prompt=system_prompt,
                 )
-                # Override the candidate_id to ensure consistency
                 email.candidate_id = candidate.candidate_id
                 emails.append(email)
             except Exception as e:
                 logger.error(f"Failed to draft email for {candidate.candidate_id}: {e}")
 
-        # 2. Send emails via MCP (rate-limited)
-        send_results = []
-        async with AsyncExitStack() as stack:
-            read, write = await stack.enter_async_context(stdio_client(self.server_params))
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-
-            for email in emails:
-                try:
-                    result = await session.call_tool(
-                        name="send_outreach_email",
-                        arguments={
-                            "candidate_id": email.candidate_id,
-                            "subject": email.subject,
-                            "body": email.body,
-                        },
-                    )
-                    if result.isError:
-                        send_results.append({"candidate_id": email.candidate_id, "status": "error", "detail": str(result.content)})
-                    else:
-                        send_results.append(json.loads(result.content[0].text))
-                except Exception as e:
-                    send_results.append({"candidate_id": email.candidate_id, "status": "error", "detail": str(e)})
-
-        logger.info(f"{self.name} completed: {len(emails)} emails drafted, {len(send_results)} send attempts.")
-        return OutreachDrafterResponse(emails=emails, send_results=send_results)
+        logger.info(f"OutreachDrafter completed: {len(emails)} emails drafted.")
+        return OutreachDrafterResponse(emails=emails, send_results=[])

@@ -24,8 +24,23 @@ class CandidateScorerResponse(BaseModel):
 
 class CandidateScorer(BaseAgent):
     """
-    Agent responsible for taking an ExtractedJD, searching for candidates via the Candidate DB MCP,
-    and then using the LLM to re-rank/score them based on semantic similarity and explicit requirements.
+    Agent responsible for scoring candidates against a job description.
+    
+    Search architecture (recall + precision, no keyword index):
+    
+    1. **Vector similarity for recall**: Queries ChromaDB with a semantic search string
+       built from the JD (role title + required skills + nice-to-haves). ChromaDB uses
+       cosine similarity (derived from L2 distance) with all-MiniLM-L6-v2 embeddings
+       to return the top-K most semantically similar candidates. This casts a wide net.
+    
+    2. **LLM re-ranker for precision**: Each candidate is then evaluated by the LLM with
+       a structured output schema that explicitly extracts `matched_skills` and `missing_skills`
+       against the JD requirements. This acts as the exact-skill check without needing a 
+       separate BM25/keyword index — the LLM is effectively performing keyword-level matching
+       as part of its re-ranking.
+    
+    3. **Final score**: 40% semantic similarity + 60% LLM re-rank score. The heavier LLM
+       weight ensures that keyword-level skill matching dominates over pure embedding distance.
     """
     def __init__(self):
         super().__init__(name="CandidateScorer")

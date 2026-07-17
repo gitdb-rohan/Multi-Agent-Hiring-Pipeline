@@ -33,11 +33,21 @@ import uuid
 def generate_uuid():
     return str(uuid.uuid4())
 
+class HRUser(Base):
+    __tablename__ = "hr_users"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    auth_token = Column(String, index=True, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+
 class Run(Base):
     __tablename__ = "runs"
     id = Column(String, primary_key=True, default=generate_uuid)
     goal_text = Column(Text, nullable=False)
     status = Column(String, nullable=False, default="pending")
+    created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
