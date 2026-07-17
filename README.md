@@ -212,9 +212,9 @@ Three independent MCP servers, each a separate deployable process (stdio for loc
 
 | Server | Tools Exposed | Backing System |
 |---|---|---|
-| `jd-parser-server` | `parse_raw_jd`, `normalize_skill_taxonomy` | Pure LLM + skill taxonomy lookup table |
+| `jd-parser-server` | `parse_raw_jd`, `normalize_skill_taxonomy` | Pure LLM + dynamic LLM skill taxonomy mapping |
 | `candidate-db-server` | `vector_search_candidates`, `get_candidate_profile`, `upsert_candidate` | ChromaDB |
-| `email-server` | `send_outreach_email`, `check_rate_limit` | Redis token bucket (rate limiting) + in-memory store |
+| `email-server` | `send_outreach_email`, `check_rate_limit` | Redis token bucket (rate limiting) + real domain lookup via ChromaDB metadata |
 
 > **Note on email-server:** Emails are currently stored in-memory rather than sent via SMTP. The rate-limiting (Redis token bucket) and MCP interface are production-ready — swap the `send_outreach_email` tool body for SMTP/SendGrid/SES in production.
 
