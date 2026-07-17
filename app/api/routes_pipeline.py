@@ -3,6 +3,9 @@ import json
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.agents.planner import PlannerAgent, PlannerRequest
 from app.orchestration.events import event_emitter
@@ -27,18 +30,54 @@ class RunPipelineResponse(BaseModel):
     message: str
 
 
-async def execute_pipeline_background(request: PlannerRequest, db: AsyncSession):
+async def execute_pipeline_background(request: PlannerRequest, hr_email: str, db: AsyncSession):
     """Background task to run the planner and save results to DB."""
     planner = PlannerAgent()
     
     # We could optionally dequeue from redis here, but for simplicity 
     # we just run the agent directly. The queue is mainly for rate limiting.
     try:
-        response = await planner.run(request, initial_context={'hr_email': hr_email})
+        planner.context = {'hr_email': hr_email}
+        response = await planner.run(request)
         
-        # In a full implementation, we'd unpack `response.context` and save everything
-        # to their respective tables (jds, candidates, outreach_emails, eval_results)
-        # For now, we update the main run status.
+        # Unpack context and save to DB so review queue and other tabs work!
+        from app.infra.db import ScoredCandidateDB, OutreachEmailDB, EvalResultDB
+        import json
+        
+        candidates = response.context.get("scored_candidates", [])
+        for c in candidates:
+            db.add(ScoredCandidateDB(
+                run_id=response.run_id,
+                candidate_id=c.get("candidate_id", ""),
+                final_score=c.get("final_score", 0.0),
+                semantic_similarity=c.get("semantic_similarity", 0.0),
+                llm_rerank_score=c.get("llm_rerank_score", 0.0),
+                matched_skills_json=json.dumps(c.get("matched_skills", [])),
+                missing_skills_json=json.dumps(c.get("missing_skills", [])),
+                rationale_json=json.dumps(c.get("rationale", ""))
+            ))
+            
+        emails = response.context.get("outreach_emails", [])
+        for e in emails:
+            db.add(OutreachEmailDB(
+                run_id=response.run_id,
+                candidate_id=e.get("candidate_id", ""),
+                subject=e.get("subject", ""),
+                body=e.get("body", "")
+            ))
+            
+        for ev in response.eval_results:
+            # GEval results are dicts here because we called model_dump() in state_machine.py
+            db.add(EvalResultDB(
+                run_id=response.run_id,
+                agent=ev.get("agent", ""),
+                task_id=ev.get("task_id", ""),
+                relevance=ev.get("relevance", 0.0),
+                faithfulness=ev.get("faithfulness", 0.0),
+                completeness=ev.get("completeness", 0.0),
+                needs_review=ev.get("needs_human_review", False),
+                review_reason=ev.get("review_reason", "")
+            ))
         db_run = await db.get(Run, response.run_id)
         if db_run:
             db_run.status = response.status
@@ -47,13 +86,25 @@ async def execute_pipeline_background(request: PlannerRequest, db: AsyncSession)
             await db.commit()
             
     except Exception as e:
-        # Update db run to failed
-        pass
+        logger.exception(f"Pipeline background task failed for run {request.run_id}: {e}")
+        # Emit error event so the frontend SSE stream gets notified
+        await event_emitter.emit_error(request.run_id, str(e))
+        # Update DB run status to failed
+        try:
+            db_run = await db.get(Run, request.run_id)
+            if db_run:
+                db_run.status = "failed"
+                from datetime import datetime, timezone
+                db_run.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+        except Exception:
+            pass
 
 @router.post("/run", response_model=RunPipelineResponse)
 async def run_pipeline(
     payload: RunPipelineRequest, 
     background_tasks: BackgroundTasks,
+    hr_email: str = Depends(get_current_hr),
     db: AsyncSession = Depends(get_db)
 ):
     # Enqueue task to redis (for durability/scaling, though we run it locally here)
@@ -74,7 +125,7 @@ async def run_pipeline(
         top_k=payload.top_k
     )
     
-    background_tasks.add_task(execute_pipeline_background, request, db)
+    background_tasks.add_task(execute_pipeline_background, request, hr_email, db)
     
     return RunPipelineResponse(
         run_id=db_run.id,
@@ -134,7 +185,15 @@ async def draft_outreach_email(
     if req.custom_instructions:
         role_str += f"\nCustom Instructions: {req.custom_instructions}"
         
-    fake_jd = ExtractedJD(role=role_str, required_skills=[], nice_to_have_skills=[])
+    fake_jd = ExtractedJD(
+        role_title=role_str, 
+        required_skills=[], 
+        nice_to_have_skills=[],
+        experience_band="mid",
+        min_years_experience=0,
+        red_flags=[],
+        confidence=1.0
+    )
     fake_candidate = ScoredCandidate(
         candidate_id=cand_id, 
         final_score=1.0, 
@@ -146,10 +205,11 @@ async def draft_outreach_email(
     )
     
     drafter = OutreachDrafter()
+    drafter.context = {"hr_email": hr_email, "cand_name": cand_name}
     drafter_req = OutreachDrafterRequest(jd=fake_jd, scored_candidates=[fake_candidate])
     
     # We pass the candidate name inside the context so Drafter can use it
-    resp = await drafter.run(drafter_req, context={"hr_email": hr_email, "cand_name": cand_name})
+    resp = await drafter.run(drafter_req)
     
     # We don't save to DB here, we just return the draft to the frontend!
     if not resp.emails:

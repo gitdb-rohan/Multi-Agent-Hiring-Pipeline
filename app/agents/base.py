@@ -35,6 +35,7 @@ class BaseAgent:
     
     def __init__(self, name: str):
         self.name = name
+        self.context: dict = {}
 
     async def run(self, *args, **kwargs) -> BaseModel:
         """
