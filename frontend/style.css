@@ -920,3 +920,47 @@ textarea {
     background: rgba(255, 255, 255, 0.15);
 }
 
+
+
+[data-theme="dark"] header {
+    background: rgba(20, 20, 20, 0.82);
+    border-bottom: 0.5px solid rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="number"],
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #F5F5F7;
+}
+
+[data-theme="dark"] .nav-pill {
+    color: #A1A1A6;
+}
+
+[data-theme="dark"] .nav-pill:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .nav-pill.active {
+    background: #fff;
+    color: #000;
+}
+
+[data-theme="dark"] .btn-primary {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .btn-primary:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Ensure the app body itself has the proper background */
+[data-theme="dark"] {
+    --bg: #000000;
+    --bg-secondary: #111111;
+}
