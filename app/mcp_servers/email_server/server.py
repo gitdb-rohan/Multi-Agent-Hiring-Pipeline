@@ -44,10 +44,15 @@ async def send_outreach_email(candidate_id: str, subject: str, body: str) -> str
     smtp_pass = os.environ.get("SMTP_PASS")
     sender_email = os.environ.get("SMTP_SENDER", "hiring@company.com")
     
-    # We simulate candidate email via their ID if no real email is known, 
-    # but in a real system we would pass the candidate's email address here.
-    # For now, we will use a dummy domain if we just have the ID.
-    recipient_email = f"{candidate_id}@example.com"
+    from app.infra.vector_store import vector_store
+    
+    # Fetch real email from Chroma metadata
+    candidate_data = vector_store.get_candidate(candidate_id)
+    if candidate_data and "metadata" in candidate_data and "email" in candidate_data["metadata"]:
+        recipient_email = candidate_data["metadata"]["email"]
+    else:
+        logger.warning(f"Could not find real email for {candidate_id}, falling back to dummy domain")
+        recipient_email = f"{candidate_id}@example.com"
 
     try:
         if smtp_host and smtp_user and smtp_pass:

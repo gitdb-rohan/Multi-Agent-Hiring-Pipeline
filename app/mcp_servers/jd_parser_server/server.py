@@ -43,20 +43,27 @@ async def parse_raw_jd(raw_text: str) -> str:
         logger.error(f"Error extracting JD: {e}")
         return f"Error: {e}"
 
+class NormalizedSkill(BaseModel):
+    normalized_name: str
+
 @mcp.tool()
 async def normalize_skill_taxonomy(skill_name: str) -> str:
     """
-    Normalizes a skill name to a standard taxonomy (mocked for now).
+    Normalizes a skill name to a standard taxonomy using the LLM.
     """
-    taxonomy = {
-        "reactjs": "React",
-        "react.js": "React",
-        "node": "Node.js",
-        "nodejs": "Node.js",
-        "golang": "Go",
-    }
-    normalized = taxonomy.get(skill_name.lower(), skill_name.title())
-    return normalized
+    llm = get_llm_provider()
+    system_prompt = "You are an expert technical recruiter. Map the given skill to the standard industry taxonomy name (e.g., 'reactjs' -> 'React', 'golang' -> 'Go', 'nodejs' -> 'Node.js'). Output the standard capitalized name."
+    
+    try:
+        result = await llm.generate_structured_output(
+            prompt=skill_name,
+            response_model=NormalizedSkill,
+            system_prompt=system_prompt
+        )
+        return result.normalized_name
+    except Exception as e:
+        logger.error(f"Failed to normalize skill {skill_name}: {e}")
+        return skill_name.title()
 
 if __name__ == "__main__":
     # Run the server on stdio
