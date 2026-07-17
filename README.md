@@ -308,12 +308,56 @@ OTEL_EXPORTER_OTLP_ENDPOINT=
 
 ---
 
-## 14. Next Step
 
-Start with **Phase 0 (scaffolding)** and **Phase 1 (JD Analyser)** — this gives us a working, testable slice end-to-end before adding the rest. Say the word and we'll start writing that code.
+## Quick Start: How to Run the Project
+
+Follow these steps to spin up the entire pipeline locally:
+
+1. **Install Dependencies**
+   We use `uv` for lightning-fast package management:
+   ```bash
+   uv sync
+   ```
+
+2. **Set Up the Environment**
+   Copy the example environment file and fill in your API keys (e.g., OpenAI or Gemini):
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Start the Infrastructure (Optional)**
+   If you have Docker, you can spin up Postgres, Redis, and ChromaDB:
+   ```bash
+   docker-compose up -d
+   ```
+   *(Note: The system falls back to SQLite and local Chroma if Postgres/Redis are absent).*
+
+4. **Run Database Migrations**
+   Initialize the database schema (including the HR Authentication tables):
+   ```bash
+   PYTHONPATH=. uv run alembic upgrade head
+   ```
+
+5. **Seed the Database (Optional but Recommended)**
+   Load some mock candidates and standard email templates into ChromaDB:
+   ```bash
+   PYTHONPATH=. uv run python scripts/seed_candidates.py
+   PYTHONPATH=. uv run python scripts/seed_templates.py
+   ```
+
+6. **Start the FastAPI Backend & Frontend**
+   Run the Uvicorn server (which serves the API and the static frontend):
+   ```bash
+   PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+   ```
+
+7. **Access the Application**
+   Open your browser and navigate to:
+   [http://localhost:8080](http://localhost:8080)
+
+   *Since this is a secure HR platform, you must click **Register** to create an account with a secure password the first time you visit!*
 
 ---
-
 ## 15. Switching LLM Providers & Models
 
 The pipeline uses a **provider-agnostic adapter layer** in [`app/llm/provider_adapter.py`](app/llm/provider_adapter.py). All you need to do is update two values in your `.env` file and optionally install the relevant SDK. No agent code changes required.

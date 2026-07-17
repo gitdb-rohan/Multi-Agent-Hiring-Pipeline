@@ -129,18 +129,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    checkAuth();
-            }
-        });
-    }
-
-    if(logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            localStorage.removeItem('hr_email');
-            checkAuth();
-        });
-    }
-
     // Check auth on load
     checkAuth();
 
