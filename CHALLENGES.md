@@ -30,3 +30,9 @@ Building a multi-agent system (MAS) with a strict "human-in-the-loop" constraint
 **Challenge**: Pipeline runs take 30-90 seconds. A simple loading spinner is terrible UX.
 **Solution**:
 - We built an Event Emitter that hooks into the State Machine. Every time an agent starts, finishes, or gets flagged by G-Eval, an SSE event is fired. The Vanilla JS frontend listens to these events and constructs a live timeline of operations, completely removing the "black box" feeling of AI pipelines.
+
+## 6. Context Sharing & Dynamic Resolution
+**Challenge**: Tools operating in isolated MCP servers often lack the context to execute end-to-end tasks (e.g., the email server only receives a `candidate_id`, not an email address). Hardcoding dummy data limits real-world application.
+**Solution**:
+- **Cross-Server State Resolution**: We allow the `email-server` to directly query the `candidate-db-server`'s underlying vector store to resolve the actual email metadata dynamically before sending.
+- **LLM-in-the-Loop Utilities**: For tasks like standardizing wildly varying skill names from a JD into a normalized taxonomy, we baked a secondary LLM query directly into the `jd-parser-server` tool. This ensures the orchestrator agent doesn't need to waste its own context window handling mundane formatting tasks.
