@@ -1,5 +1,4 @@
 import asyncio
-import json
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -42,8 +41,6 @@ async def execute_pipeline_background(request: PlannerRequest, hr_email: str, db
         
         # Unpack context and save to DB so review queue and other tabs work!
         from app.infra.db import ScoredCandidateDB, OutreachEmailDB, EvalResultDB
-        import json
-        
         candidates = response.context.get("scored_candidates", [])
         for c in candidates:
             db.add(ScoredCandidateDB(
@@ -52,9 +49,9 @@ async def execute_pipeline_background(request: PlannerRequest, hr_email: str, db
                 final_score=c.get("final_score", 0.0),
                 semantic_similarity=c.get("semantic_similarity", 0.0),
                 llm_rerank_score=c.get("llm_rerank_score", 0.0),
-                matched_skills_json=json.dumps(c.get("matched_skills", [])),
-                missing_skills_json=json.dumps(c.get("missing_skills", [])),
-                rationale_json=json.dumps(c.get("rationale", ""))
+                matched_skills_json=c.get("matched_skills", []),
+                missing_skills_json=c.get("missing_skills", []),
+                rationale_json=c.get("rationale", "")
             ))
             
         emails = response.context.get("outreach_emails", [])

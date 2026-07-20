@@ -64,7 +64,11 @@ class ScoredCandidateDB(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     run_id = Column(String, ForeignKey("runs.id"), nullable=False)
     candidate_id = Column(String, nullable=False)
+    semantic_similarity = Column(Float, nullable=False, default=0.0)
+    llm_rerank_score = Column(Float, nullable=False, default=0.0)
     final_score = Column(Float, nullable=False)
+    matched_skills_json = Column(JSON, nullable=False, default=list)
+    missing_skills_json = Column(JSON, nullable=False, default=list)
     rationale_json = Column(JSON, nullable=False)
 
 class OutreachEmailDB(Base):
@@ -97,4 +101,3 @@ class HumanReview(Base):
     decision = Column(String, nullable=True) # e.g. "approved", "rejected"
     notes = Column(Text, nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-
