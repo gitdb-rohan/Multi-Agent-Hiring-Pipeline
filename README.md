@@ -304,8 +304,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT=
 - Rate limiting enforced before hitting external APIs, not after failure.
 - Eval golden set run in CI before merge — no regression in extraction/scoring accuracy.
 - Structured logging + tracing correlated by `run_id` across all agents and MCP servers.
-- Secrets only via environment/config, never hardcoded.
-
+- Secrets only via environment/config, never hardcoded (JWT secret dynamically generated).
+- Strict stateless authentication enforced via `get_current_hr` dependency for all internal API endpoints.
+- Path traversal mitigation implemented on manual candidate ingestion.
+- Supply chain secured with dependency versions pinned to resolve all critical CVEs.
 ---
 
 
@@ -356,6 +358,12 @@ Follow these steps to spin up the entire pipeline locally:
    [http://localhost:8080](http://localhost:8080)
 
    *Since this is a secure HR platform, you must click **Register** to create an account with a secure password the first time you visit!*
+
+8. **Run End-to-End Integration Tests**
+   You can verify the entire pipeline locally by running the included `test_e2e_flow.py` script. This runs through authentication, ingestion, triggering, and pipeline state monitoring using an in-memory test database.
+   ```bash
+   PYTHONPATH=. uv run python scripts/test_e2e_flow.py
+   ```
 
 ---
 ## 15. Switching LLM Providers & Models

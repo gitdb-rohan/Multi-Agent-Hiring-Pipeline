@@ -14,6 +14,7 @@ from app.ingestion.resume_parser import extract_text_from_file, is_supported_res
 from app.ingestion.profile_extractor import extract_profile_from_resume
 from app.infra.vector_store import vector_store
 from app.config import settings
+from app.api.auth import get_current_hr
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ async def _ingest_single_file(
 async def ingest_resume(
     file: UploadFile = File(...),
     position_applied: str = Query(default="", description="Position the candidate is applying for"),
+    hr_email: str = Depends(get_current_hr),
 ):
     """
     Upload a single resume (PDF/DOCX). Extracts profile via LLM, deduplicates 
@@ -155,6 +157,7 @@ async def ingest_resume(
 async def ingest_batch(
     files: List[UploadFile] = File(...),
     position_applied: str = Query(default="", description="Position candidates are applying for"),
+    hr_email: str = Depends(get_current_hr),
 ):
     """
     Upload multiple resumes at once. Each file is processed independently.
@@ -193,12 +196,20 @@ async def ingest_batch(
 
 
 @router.post("/ingest/folder", response_model=IngestResponse)
-async def ingest_from_folder(payload: FolderIngestRequest):
+async def ingest_from_folder(
+    payload: FolderIngestRequest,
+    hr_email: str = Depends(get_current_hr),
+):
     """
     Process all resume files (PDF/DOCX) in a local folder.
     Useful for bulk-importing an existing candidate pool.
     """
-    folder = Path(payload.folder_path)
+    folder = Path(payload.folder_path).resolve()
+    watch_dir = Path(settings.RESUME_WATCH_DIR).resolve()
+    
+    if not folder.is_relative_to(watch_dir):
+        raise HTTPException(status_code=400, detail="Invalid folder path. Must be within the configured watch directory.")
+        
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=400, detail=f"Directory not found: {payload.folder_path}")
 
@@ -225,7 +236,7 @@ async def ingest_from_folder(payload: FolderIngestRequest):
 
 
 @router.post("/ingest/manual", response_model=IngestResult)
-async def ingest_manual(candidate: CandidateManualInput):
+async def ingest_manual(candidate: CandidateManualInput, hr_email: str = Depends(get_current_hr)):
     """
     Manually ingest a candidate without a resume file.
     """
@@ -275,6 +286,7 @@ async def ingest_manual(candidate: CandidateManualInput):
 async def list_candidates(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    hr_email: str = Depends(get_current_hr),
 ):
     """
     List all candidates currently in the vector store with pagination.
@@ -310,7 +322,7 @@ async def list_candidates(
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)
-async def get_candidate(candidate_id: str):
+async def get_candidate(candidate_id: str, hr_email: str = Depends(get_current_hr)):
     """Get a single candidate's full profile by ID."""
     result = vector_store.get_candidate(candidate_id)
     if not result:

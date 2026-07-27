@@ -64,7 +64,11 @@ class ScoredCandidateDB(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     run_id = Column(String, ForeignKey("runs.id"), nullable=False)
     candidate_id = Column(String, nullable=False)
+    semantic_similarity = Column(Float, nullable=False, default=0.0)
+    llm_rerank_score = Column(Float, nullable=False, default=0.0)
     final_score = Column(Float, nullable=False)
+    matched_skills_json = Column(JSON, nullable=False, default=list)
+    missing_skills_json = Column(JSON, nullable=False, default=list)
     rationale_json = Column(JSON, nullable=False)
 
 class OutreachEmailDB(Base):
@@ -98,3 +102,18 @@ class HumanReview(Base):
     notes = Column(Text, nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
 
+class TaskState(Base):
+    __tablename__ = "task_states"
+    id = Column(String, primary_key=True, default=generate_uuid)
+    run_id = Column(String, ForeignKey("runs.id"), nullable=False)
+    agent_name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    input_hash = Column(String, nullable=False, index=True)
+    output_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+class PipelineContext(Base):
+    __tablename__ = "pipeline_contexts"
+    run_id = Column(String, ForeignKey("runs.id"), primary_key=True)
+    context_data = Column(JSON, nullable=False, default=dict)

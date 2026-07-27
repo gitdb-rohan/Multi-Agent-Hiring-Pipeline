@@ -24,10 +24,44 @@ class OutreachDrafterResponse(BaseModel):
     emails: List[OutreachEmail]
     send_results: list = []
 
-class OutreachDrafter(BaseAgent):
+    TASK_DESCRIPTION = "Draft personalized, professional outreach emails for shortlisted candidates"
+
     def __init__(self):
         super().__init__(name="OutreachDrafter")
         self.llm = get_llm_provider()
+
+    def build_request(self, context: dict) -> OutreachDrafterRequest:
+        jd_data = context.get("extracted_jd")
+        if isinstance(jd_data, dict):
+            jd = ExtractedJD(**jd_data)
+        else:
+            jd = jd_data
+        
+        candidates_data = context.get("scored_candidates", [])
+        candidates = []
+        for c in candidates_data:
+            if isinstance(c, dict):
+                candidates.append(ScoredCandidate(**c))
+            else:
+                candidates.append(c)
+        
+        return OutreachDrafterRequest(jd=jd, scored_candidates=candidates)
+
+    def store_result(self, result: OutreachDrafterResponse, context: dict) -> None:
+        context["outreach_emails"] = [e.model_dump() for e in result.emails]
+        context["send_results"] = result.send_results
+
+    def get_summary(self, result: OutreachDrafterResponse) -> str:
+        return f"Drafted {len(result.emails)} outreach emails"
+
+    def get_eval_input_context(self, context: dict) -> str:
+        return json.dumps({
+            "jd": context.get("extracted_jd", {}),
+            "candidates": context.get("scored_candidates", [])[:3],
+        }, default=str)
+
+    def parse_cached_result(self, output_json: dict) -> OutreachDrafterResponse:
+        return OutreachDrafterResponse(**output_json)
 
     @with_retry(max_retries=3, base_delay=2.0)
     async def _execute(self, request: OutreachDrafterRequest) -> OutreachDrafterResponse:
@@ -52,8 +86,9 @@ Here are some standard company email templates you should try to follow for tone
 {template_text}
 """
 
-        emails: List[OutreachEmail] = []
-        for candidate in request.scored_candidates:
+        import asyncio
+        
+        async def _draft_single_email(candidate: ScoredCandidate) -> OutreachEmail | None:
             prompt = f"""
 Candidate ID: {candidate.candidate_id}
 Candidate Name: {cand_name}
@@ -71,9 +106,21 @@ Draft the subject line and the body of the personalized outreach email for {cand
                     system_prompt=system_prompt,
                 )
                 email.candidate_id = candidate.candidate_id
-                emails.append(email)
+                return email
             except Exception as e:
                 logger.error(f"Failed to draft email for {candidate.candidate_id}: {e}")
+                return None
+
+        # Execute all LLM drafting calls concurrently
+        tasks = [_draft_single_email(c) for c in request.scored_candidates]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        emails: List[OutreachEmail] = []
+        for r in results:
+            if isinstance(r, OutreachEmail):
+                emails.append(r)
+            elif isinstance(r, Exception):
+                logger.error(f"Concurrency error during email drafting: {r}")
 
         logger.info(f"OutreachDrafter completed: {len(emails)} emails drafted.")
         return OutreachDrafterResponse(emails=emails, send_results=[])

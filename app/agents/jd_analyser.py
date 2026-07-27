@@ -21,6 +21,8 @@ class JDAnalyser(BaseAgent):
     Agent responsible for extracting structured data from a raw job description.
     Uses the jd-parser-server MCP server to perform the actual parsing.
     """
+    TASK_DESCRIPTION = "Extract structured job requirements (skills, experience band, red flags) from raw JD text"
+
     def __init__(self):
         super().__init__(name="JDAnalyser")
         # In a real deployed environment, this might point to a binary or an HTTP SSE endpoint.
@@ -30,6 +32,21 @@ class JDAnalyser(BaseAgent):
             args=["run", "python", "-m", "app.mcp_servers.jd_parser_server.server"],
             env=None # Inherit current environment which has OPENAI_API_KEY
         )
+
+    def build_request(self, context: dict) -> JDAnalyserRequest:
+        return JDAnalyserRequest(raw_text=context.get("raw_jd_text", ""))
+
+    def store_result(self, result: ExtractedJD, context: dict) -> None:
+        context["extracted_jd"] = result.model_dump()
+
+    def get_summary(self, result: ExtractedJD) -> str:
+        return f"Extracted {len(result.required_skills)} required skills, confidence {result.confidence}"
+
+    def get_eval_input_context(self, context: dict) -> str:
+        return context.get("raw_jd_text", "")
+
+    def parse_cached_result(self, output_json: dict) -> ExtractedJD:
+        return ExtractedJD(**output_json)
 
     @with_retry(max_retries=3, base_delay=2.0)
     async def _execute(self, request: JDAnalyserRequest) -> ExtractedJD:

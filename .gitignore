@@ -12,6 +12,7 @@ data/
 chroma_data/
 postgres_data/
 redis_data/
+*.db
 
 # Python
 __pycache__/

@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import Type, TypeVar, Any
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -59,6 +60,7 @@ class GeminiAdapter(LLMProviderAdapter):
         from google import genai
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.default_model = "gemini-3.1-flash-lite"
+        # Not using a global semaphore here. Celery worker thread limits should manage concurrency.
 
     async def generate_structured_output(
         self,
@@ -67,48 +69,47 @@ class GeminiAdapter(LLMProviderAdapter):
         system_prompt: str | None = None,
         model_name: str | None = None,
     ) -> T:
-        import asyncio
+        from google.genai import types
+        
         model_to_use = model_name or self.default_model
-
+        
         full_prompt = ""
         if system_prompt:
             full_prompt += f"{system_prompt}\n\n"
+        full_prompt += f"USER REQUEST:\n{prompt}"
 
-        schema_json = json.dumps(response_model.model_json_schema(), indent=2)
-        full_prompt += (
-            f"USER REQUEST:\n{prompt}\n\n"
-            f"Respond ONLY with valid JSON that exactly matches this JSON schema:\n"
-            f"```json\n{schema_json}\n```\n"
-            f"Return just the raw JSON object — no markdown fences, no explanation."
+        # Use native structured outputs
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=response_model,
         )
 
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.client.models.generate_content(
-                model=model_to_use,
-                contents=full_prompt,
-            )
+        response = await self.client.aio.models.generate_content(
+            model=model_to_use,
+            contents=full_prompt,
+            config=config,
         )
 
         raw_text = response.text.strip()
-        # Strip any accidental markdown fences
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-            raw_text = raw_text.strip()
-
         data = json.loads(raw_text)
         return response_model(**data)
 
+# Singleton instances
+_OPENAI_ADAPTER = None
+_GEMINI_ADAPTER = None
 
 def get_llm_provider() -> LLMProviderAdapter:
-    """Factory to get the configured LLM provider."""
+    """Factory to get the configured LLM provider (Singleton)."""
+    global _OPENAI_ADAPTER, _GEMINI_ADAPTER
+    
     provider = settings.LLM_PROVIDER.lower()
     if provider == "openai":
-        return OpenAIAdapter()
+        if _OPENAI_ADAPTER is None:
+            _OPENAI_ADAPTER = OpenAIAdapter()
+        return _OPENAI_ADAPTER
     if provider == "gemini":
-        return GeminiAdapter()
+        if _GEMINI_ADAPTER is None:
+            _GEMINI_ADAPTER = GeminiAdapter()
+        return _GEMINI_ADAPTER
+        
     raise ValueError(f"Unsupported LLM provider: {settings.LLM_PROVIDER}")
-

@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 
 from app.infra.db import EvalResultDB, HumanReview
 from app.dependencies import get_db
+from app.api.auth import get_current_hr
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -30,7 +31,7 @@ class ReviewDecision(BaseModel):
 
 
 @router.get("/queue", response_model=List[EvalResultOut])
-async def get_review_queue(db: AsyncSession = Depends(get_db)):
+async def get_review_queue(db: AsyncSession = Depends(get_db), hr_email: str = Depends(get_current_hr)):
     """Fetch all eval results that need human review and haven't been reviewed yet."""
     from app.infra.db import ScoredCandidateDB, OutreachEmailDB
     # Find eval results that need review but don't have a human review entry yet.
@@ -80,7 +81,8 @@ async def get_review_queue(db: AsyncSession = Depends(get_db)):
 async def submit_review(
     eval_id: str, 
     decision: ReviewDecision,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    hr_email: str = Depends(get_current_hr)
 ):
     """Submit a human review decision for an evaluation result."""
     eval_res = await db.get(EvalResultDB, eval_id)
@@ -111,7 +113,8 @@ class EmailDecision(BaseModel):
 async def review_single_email(
     email_id: str,
     decision: EmailDecision,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    hr_email: str = Depends(get_current_hr)
 ):
     from app.infra.db import OutreachEmailDB
     from mcp import ClientSession

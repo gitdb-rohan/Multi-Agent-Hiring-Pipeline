@@ -1,6 +1,6 @@
 """
 Custom orchestration state machine.
-Drives the pipeline through: PENDING → PLANNING → DISPATCHING → RUNNING → EVALUATING → (DONE | NEEDS_REVIEW | FAILED)
+Drives the pipeline through: PENDING → PLANNING → DISPATCHING → RUNNING → EVALUATING → (DONE | PAUSED_FOR_REVIEW | FAILED)
 """
 from __future__ import annotations
 import json
@@ -13,11 +13,9 @@ from typing import Any
 from app.orchestration.task_graph import TaskGraph, Task, TaskStatus
 from app.orchestration.events import event_emitter
 
-from app.agents.jd_analyser import JDAnalyser, JDAnalyserRequest
-from app.agents.candidate_scorer import CandidateScorer, CandidateScorerRequest
-from app.agents.outreach_drafter import OutreachDrafter, OutreachDrafterRequest
-from app.schemas.jd import ExtractedJD
-from app.schemas.candidate import ScoredCandidate
+from app.agents.jd_analyser import JDAnalyser
+from app.agents.candidate_scorer import CandidateScorer
+from app.agents.outreach_drafter import OutreachDrafter
 from app.evaluation.geval import evaluate_agent_output
 
 logger = logging.getLogger(__name__)
@@ -31,6 +29,7 @@ class PipelineState(str, Enum):
     EVALUATING = "evaluating"
     DONE = "done"
     NEEDS_REVIEW = "needs_review"
+    PAUSED_FOR_REVIEW = "paused_for_review"
     FAILED = "failed"
 
 
@@ -41,27 +40,21 @@ AGENT_REGISTRY = {
     "OutreachDrafter": OutreachDrafter,
 }
 
-# Human-readable task descriptions used by G-Eval to understand what each agent is supposed to do
-TASK_DESCRIPTIONS = {
-    "JDAnalyser": "Extract structured job requirements (skills, experience band, red flags) from raw JD text",
-    "CandidateScorer": "Score and rank candidates against extracted job requirements using vector similarity and LLM re-ranking",
-    "OutreachDrafter": "Draft personalized, professional outreach emails for shortlisted candidates",
-}
-
-
 class PipelineStateMachine:
     """
     Drives a TaskGraph through the pipeline lifecycle.
     Each state transition is emitted as an SSE event for real-time frontend updates.
     """
 
-    def __init__(self, task_graph: TaskGraph):
+    def __init__(self, task_graph: TaskGraph, context: dict[str, Any] | None = None):
         self.task_graph = task_graph
         self.state = PipelineState.PENDING
         self.run_id = task_graph.run_id
         # Shared context between tasks so outputs flow to downstream inputs
-        self.context: dict[str, Any] = {}
+        self.context: dict[str, Any] = context or {}
         self.eval_results: list[dict] = []
+        # Flag to indicate if we need to pause the pipeline
+        self.should_pause = False
 
     async def _transition(self, new_state: PipelineState):
         old = self.state
@@ -69,13 +62,11 @@ class PipelineStateMachine:
         logger.info(f"[{self.run_id}] State: {old.value} → {new_state.value}")
         await event_emitter.emit_state_change(self.run_id, old.value, new_state.value)
 
-    async def run(self) -> dict[str, Any]:
+    async def run(self, db=None) -> dict[str, Any]:
         """Execute the full pipeline."""
         try:
-            await self._transition(PipelineState.PLANNING)
-            # Planning is already done (TaskGraph was built by Planner), move to dispatch
-            await self._transition(PipelineState.DISPATCHING)
-            await self._transition(PipelineState.RUNNING)
+            if self.state in [PipelineState.PENDING, PipelineState.PAUSED_FOR_REVIEW, PipelineState.NEEDS_REVIEW]:
+                await self._transition(PipelineState.RUNNING)
 
             max_iterations = len(self.task_graph.tasks) * 3  # safety
             iteration = 0
@@ -96,9 +87,20 @@ class PipelineStateMachine:
                     await self._transition(PipelineState.FAILED)
                     return {"status": "failed", "error": "Deadlock detected"}
 
-                # Execute ready tasks (could be parallelized with asyncio.gather for independent tasks)
-                for task in ready_tasks:
-                    await self._execute_task(task)
+                # Execute ready tasks in parallel
+                exec_tasks = [self._execute_task(task, db) for task in ready_tasks]
+                await asyncio.gather(*exec_tasks)
+
+                # After executing a tier, check if we need to pause for review
+                if self.should_pause:
+                    await self._transition(PipelineState.PAUSED_FOR_REVIEW)
+                    return {
+                        "status": self.state.value,
+                        "run_id": self.run_id,
+                        "context": self.context,
+                        "eval_results": self.eval_results,
+                        "graph_summary": self.task_graph.summary(),
+                    }
 
             if self.task_graph.has_failed():
                 await self._transition(PipelineState.FAILED)
@@ -134,7 +136,7 @@ class PipelineStateMachine:
             await event_emitter.emit_error(self.run_id, str(e))
             return {"status": "failed", "run_id": self.run_id, "error": str(e)}
 
-    async def _execute_task(self, task: Task):
+    async def _execute_task(self, task: Task, db=None):
         """Execute a single task by dispatching to the appropriate agent."""
         agent_cls = AGENT_REGISTRY.get(task.agent)
         if not agent_cls:
@@ -148,21 +150,29 @@ class PipelineStateMachine:
 
         try:
             agent = agent_cls()
-            request = self._build_request(task)
-            result = await agent.run(request)
+            request = agent.build_request(self.context)
+            
+            # Using db session if provided for caching
+            result = await agent.run(request, run_id=self.run_id, db=db)
 
             elapsed = time.time() - start
             task.status = TaskStatus.COMPLETED
 
             # Store output in context for downstream tasks
-            self._store_result(task, result)
+            agent.store_result(result, self.context)
 
             # Run G-Eval on the agent's output
-            eval_result = await self._evaluate_task(task, result)
+            eval_result = await self._evaluate_task(task, agent, result)
             if eval_result:
                 self.eval_results.append(eval_result.model_dump())
+                if eval_result.needs_human_review:
+                    self.should_pause = True
 
-            summary = self._summarize_result(task, result)
+            # If the agent is JDAnalyser, pause automatically for HITL
+            if task.agent == "JDAnalyser":
+                self.should_pause = True
+
+            summary = agent.get_summary(result)
             await event_emitter.emit_agent_completed(self.run_id, task.agent, task.name, elapsed, summary)
 
         except Exception as e:
@@ -176,23 +186,24 @@ class PipelineStateMachine:
                 task.status = TaskStatus.PENDING  # re-queue for retry
                 logger.warning(f"[{self.run_id}] Task {task.name} failed (attempt {task.retry_count}): {e}")
 
-    async def _evaluate_task(self, task: Task, result: Any):
+    async def _evaluate_task(self, task: Task, agent: Any, result: Any):
         """
         Run G-Eval (LLM-as-judge) on a completed task's output.
-        Scores relevance, faithfulness, completeness and flags for human review
-        if any dimension falls below the agent's threshold.
         """
         try:
-            input_ctx = self._get_eval_input_context(task)
-            output_str = self._get_eval_output_string(task, result)
+            input_ctx = agent.get_eval_input_context(self.context)
+            output_str = json.dumps(result.model_dump(), default=str) if hasattr(result, "model_dump") else str(result)
 
             eval_result = await evaluate_agent_output(
                 agent_name=task.agent,
                 task_id=task.id,
-                task_description=TASK_DESCRIPTIONS.get(task.agent, task.name),
+                task_description=agent.TASK_DESCRIPTION,
                 input_context=input_ctx,
                 agent_output=output_str,
             )
+
+            if not eval_result:
+                return None
 
             logger.info(
                 f"[{self.run_id}] G-Eval for {task.agent}: "
@@ -212,78 +223,3 @@ class PipelineStateMachine:
         except Exception as e:
             logger.error(f"[{self.run_id}] G-Eval failed for {task.agent}: {e}")
             return None
-
-    def _get_eval_input_context(self, task: Task) -> str:
-        """Serialize the input context relevant to this task for G-Eval."""
-        if task.agent == "JDAnalyser":
-            return self.context.get("raw_jd_text", "")
-        elif task.agent == "CandidateScorer":
-            return json.dumps(self.context.get("extracted_jd", {}), default=str)
-        elif task.agent == "OutreachDrafter":
-            return json.dumps({
-                "jd": self.context.get("extracted_jd", {}),
-                "candidates": self.context.get("scored_candidates", [])[:3],
-            }, default=str)
-        return ""
-
-    def _get_eval_output_string(self, task: Task, result: Any) -> str:
-        """Serialize the agent's output for G-Eval."""
-        if hasattr(result, "model_dump"):
-            return json.dumps(result.model_dump(), default=str)
-        return str(result)
-
-    def _build_request(self, task: Task) -> Any:
-        """Build the agent-specific request from the shared context."""
-        if task.agent == "JDAnalyser":
-            return JDAnalyserRequest(raw_text=self.context.get("raw_jd_text", ""))
-
-        elif task.agent == "CandidateScorer":
-            jd_data = self.context.get("extracted_jd")
-            if isinstance(jd_data, dict):
-                jd = ExtractedJD(**jd_data)
-            else:
-                jd = jd_data
-            return CandidateScorerRequest(
-                jd=jd,
-                top_k=self.context.get("top_k", 5),
-            )
-
-        elif task.agent == "OutreachDrafter":
-            jd_data = self.context.get("extracted_jd")
-            if isinstance(jd_data, dict):
-                jd = ExtractedJD(**jd_data)
-            else:
-                jd = jd_data
-            
-            candidates_data = self.context.get("scored_candidates", [])
-            candidates = []
-            for c in candidates_data:
-                if isinstance(c, dict):
-                    candidates.append(ScoredCandidate(**c))
-                else:
-                    candidates.append(c)
-            
-            return OutreachDrafterRequest(jd=jd, scored_candidates=candidates)
-
-        raise ValueError(f"Cannot build request for agent: {task.agent}")
-
-    def _store_result(self, task: Task, result: Any):
-        """Store agent output into shared context."""
-        if task.agent == "JDAnalyser":
-            self.context["extracted_jd"] = result.model_dump()
-        elif task.agent == "CandidateScorer":
-            self.context["scored_candidates"] = [c.model_dump() for c in result.scored_candidates]
-        elif task.agent == "OutreachDrafter":
-            self.context["outreach_emails"] = [e.model_dump() for e in result.emails]
-            self.context["send_results"] = result.send_results
-
-    def _summarize_result(self, task: Task, result: Any) -> str:
-        """Generate a human-readable summary for SSE."""
-        if task.agent == "JDAnalyser":
-            return f"Extracted {len(result.required_skills)} required skills, confidence {result.confidence}"
-        elif task.agent == "CandidateScorer":
-            return f"Scored {len(result.scored_candidates)} candidates"
-        elif task.agent == "OutreachDrafter":
-            return f"Drafted {len(result.emails)} outreach emails"
-        return "Completed"
-

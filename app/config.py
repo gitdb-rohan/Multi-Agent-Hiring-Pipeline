@@ -1,3 +1,5 @@
+from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -15,6 +17,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/hiring"
     REDIS_URL: str = "redis://localhost:6379/0"
     CHROMA_PERSIST_DIR: str = "./data/chroma"
+
+    # Security
+    JWT_SECRET_KEY: str = Field(default_factory=lambda: __import__('secrets').token_urlsafe(32))
+    JWT_ALGORITHM: str = "HS256"
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # Candidate ingestion
     RESUME_WATCH_DIR: str = "./data/resumes"

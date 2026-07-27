@@ -5,60 +5,64 @@
 
 :root {
     --bg: #FFFFFF;
-    --bg-secondary: #F5F5F7;
-    --glass-bg: rgba(255, 255, 255, 0.72);
-    --glass-border: rgba(0, 0, 0, 0.06);
-    --glass-shadow: 0 2px 20px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
-    --glass-shadow-hover: 0 4px 30px rgba(0, 0, 0, 0.07), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+    --bg-secondary: #F8F9FA;
+    --glass-bg: rgba(255, 255, 255, 0.65);
+    --glass-border: rgba(255, 255, 255, 0.4);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.02);
+    --glass-shadow-hover: 0 12px 48px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
 
-    --text-primary: #1D1D1F;
-    --text-secondary: #6E6E73;
-    --text-tertiary: #AEAEB2;
+    --text-primary: #0F172A;
+    --text-secondary: #64748B;
+    --text-tertiary: #94A3B8;
 
-    --accent: #0071E3;
-    --accent-light: rgba(0, 113, 227, 0.08);
-    --accent-hover: #0077ED;
+    --accent: #4F46E5;
+    --accent-light: rgba(79, 70, 229, 0.1);
+    --accent-hover: #4338CA;
+    --accent-gradient: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
 
-    --green: #34C759;
-    --green-bg: rgba(52, 199, 89, 0.08);
-    --orange: #FF9500;
-    --orange-bg: rgba(255, 149, 0, 0.08);
-    --red: #FF3B30;
-    --red-bg: rgba(255, 59, 48, 0.08);
-    --blue: #007AFF;
-    --blue-bg: rgba(0, 122, 255, 0.08);
+    --green: #10B981;
+    --green-bg: rgba(16, 185, 129, 0.1);
+    --orange: #F59E0B;
+    --orange-bg: rgba(245, 158, 11, 0.1);
+    --red: #EF4444;
+    --red-bg: rgba(239, 68, 68, 0.1);
+    --blue: #3B82F6;
+    --blue-bg: rgba(59, 130, 246, 0.1);
 
     --radius-sm: 8px;
     --radius-md: 14px;
     --radius-lg: 20px;
     --radius-xl: 24px;
 
-    --font: -apple-system, 'SF Pro Display', 'Inter', 'Helvetica Neue', sans-serif;
-    --transition: 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    --font: 'Inter', -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+    --transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-
 [data-theme="dark"] {
-    --bg: #000000;
-    --bg-secondary: #111111;
-    --glass-bg: rgba(30, 30, 30, 0.72);
-    --glass-border: rgba(255, 255, 255, 0.1);
-    --glass-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
-    --glass-shadow-hover: 0 8px 30px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+    --bg: #0A0A0A;
+    --bg-secondary: #121212;
+    --glass-bg: rgba(15, 15, 15, 0.65);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    --glass-shadow-hover: 0 16px 48px rgba(0, 0, 0, 1), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
     
-    --text-primary: #F5F5F7;
-    --text-secondary: #A1A1A6;
-    --text-tertiary: #6E6E73;
+    --text-primary: #F8FAFC;
+    --text-secondary: #94A3B8;
+    --text-tertiary: #475569;
+    
+    --accent: #818CF8;
+    --accent-hover: #6366F1;
+    --accent-gradient: linear-gradient(135deg, #6366F1 0%, #A855F7 100%);
 }
 
 [data-theme="dark"] .login-overlay {
-    background: radial-gradient(circle at center, rgba(30, 30, 40, 0.7) 0%, rgba(10, 10, 15, 0.95) 100%);
+    background: radial-gradient(circle at center, rgba(30, 20, 50, 0.4) 0%, rgba(10, 10, 12, 0.7) 100%);
 }
 
 [data-theme="dark"] .login-box {
-    background: rgba(25, 25, 25, 0.75);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 40px 100px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+    background: rgba(15, 15, 15, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: var(--glass-shadow);
 }
 
 [data-theme="dark"] .login-box h1 {
@@ -249,18 +253,19 @@ main {
 /* ---- Glass Cards ---- */
 .glass-card {
     background: var(--glass-bg);
-    border: 0.5px solid var(--glass-border);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
     padding: 1.5rem;
     box-shadow: var(--glass-shadow);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    transition: box-shadow var(--transition);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    transition: var(--transition);
     margin-bottom: 1rem;
 }
 
 .glass-card:hover {
     box-shadow: var(--glass-shadow-hover);
+    transform: translateY(-2px);
 }
 
 .card-top {
@@ -337,7 +342,6 @@ textarea {
     color: var(--text-tertiary);
 }
 
-/* ---- Buttons ---- */
 .btn-primary {
     display: flex;
     align-items: center;
@@ -347,24 +351,33 @@ textarea {
     padding: 12px 20px;
     border: none;
     border-radius: var(--radius-md);
-    background: var(--accent);
+    background: var(--accent-gradient);
     color: white;
     font-family: var(--font);
     font-size: 15px;
     font-weight: 600;
     cursor: pointer;
     transition: var(--transition);
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
 }
 
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-primary:active { transform: scale(0.98); }
+.btn-primary:hover:not(:disabled) {
+    box-shadow: 0 6px 16px rgba(79, 70, 229, 0.5);
+    transform: translateY(-2px);
+    background: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+}
+
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
 .btn-secondary {
     padding: 10px 20px;
-    border: 0.5px solid rgba(0, 0, 0, 0.12);
+    border: 1px solid rgba(0, 0, 0, 0.05);
     border-radius: var(--radius-sm);
-    background: white;
+    background: var(--bg-secondary);
     color: var(--text-primary);
     font-family: var(--font);
     font-size: 14px;
@@ -374,9 +387,14 @@ textarea {
     white-space: nowrap;
     align-self: flex-end;
     margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
 }
 
-.btn-secondary:hover { background: var(--bg-secondary); }
+.btn-secondary:hover:not(:disabled) {
+    background: var(--glass-bg);
+    border-color: rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+}
 
 .btn-text {
     background: none;
@@ -795,9 +813,9 @@ textarea {
 .login-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: radial-gradient(circle at center, rgba(240, 244, 248, 0.4) 0%, rgba(220, 230, 240, 0.7) 100%);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background: radial-gradient(circle at center, rgba(245, 247, 250, 0.6) 0%, rgba(220, 230, 240, 0.9) 100%);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -805,17 +823,18 @@ textarea {
 }
 
 .login-box {
-    background: rgba(255, 255, 255, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    box-shadow: 0 40px 100px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.4) inset;
-    border-radius: 20px;
-    padding: 2.5rem 2rem;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow-hover);
+    border-radius: var(--radius-xl);
+    padding: 3rem 2.5rem;
     width: 90%;
-    max-width: 320px; /* narrowed */
+    max-width: 400px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     align-items: stretch;
+    transition: var(--transition);
 }
 
 .login-box .logo {
@@ -944,6 +963,13 @@ textarea {
     background: rgba(255, 255, 255, 0.1);
 }
 
+[data-theme="dark"] .nav-pill.btn-primary {
+    background: var(--accent-gradient);
+    color: white;
+    border: none;
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
 [data-theme="dark"] .nav-pill.active {
     background: #fff;
     color: #000;
@@ -957,6 +983,16 @@ textarea {
 
 [data-theme="dark"] .btn-primary:hover {
     background: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="dark"] .btn-secondary {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .btn-secondary:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.2);
 }
 
 /* Ensure the app body itself has the proper background */

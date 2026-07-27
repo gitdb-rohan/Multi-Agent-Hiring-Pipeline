@@ -193,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Reset
         submitBtn.disabled = true;
-        btnLabel.textContent = 'Starting…';
+        btnLabel.textContent = 'Running…';
         btnSpinner.classList.remove('hidden');
         clearTimeline();
         resultsPanel.classList.add('hidden');

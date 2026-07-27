@@ -3,20 +3,30 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
-import hashlib
-import os
-import uuid
+from passlib.context import CryptContext
+import jwt
+import datetime
 
 from app.dependencies import get_db
 from app.infra.db import HRUser
+from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def hash_password(password: str) -> str:
-    # A simple deterministic hash for this prototype. In prod, use bcrypt or passlib.
-    salt = "hireflow_salt"
-    return hashlib.sha256((password + salt).encode()).hexdigest()
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return encoded_jwt
 
 class AuthRequest(BaseModel):
     email: str
@@ -32,26 +42,24 @@ async def register(req: AuthRequest, db: AsyncSession = Depends(get_db)):
     new_user = HRUser(
         email=req.email.lower(),
         hashed_password=hash_password(req.password),
-        auth_token=uuid.uuid4().hex
     )
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
-    return {"status": "success", "email": new_user.email, "token": new_user.auth_token}
+    
+    access_token = create_access_token(data={"sub": new_user.email})
+    return {"status": "success", "email": new_user.email, "token": access_token}
 
 @router.post("/login")
 async def login(req: AuthRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(HRUser).where(HRUser.email == req.email.lower()))
     user = result.scalars().first()
     
-    if not user or user.hashed_password != hash_password(req.password):
+    if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
         
-    # Generate new token on login
-    user.auth_token = uuid.uuid4().hex
-    await db.commit()
-    
-    return {"status": "success", "email": user.email, "token": user.auth_token}
+    access_token = create_access_token(data={"sub": user.email})
+    return {"status": "success", "email": user.email, "token": access_token}
 
 async def get_current_hr(
     request: Request,
@@ -62,10 +70,17 @@ async def get_current_hr(
     Dependency to validate the token and return the HR's email.
     """
     token = credentials.credentials
-    result = await db.execute(select(HRUser).where(HRUser.auth_token == token))
-    user = result.scalars().first()
-    
-    if not user:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
         
-    return user.email
+    # Optional: verify user still exists in DB
+    result = await db.execute(select(HRUser).where(HRUser.email == email))
+    if not result.scalars().first():
+        raise HTTPException(status_code=401, detail="User not found")
+        
+    return email
