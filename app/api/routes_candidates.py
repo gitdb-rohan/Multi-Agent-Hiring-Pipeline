@@ -328,30 +328,35 @@ async def list_candidates(
     List all candidates currently in the vector store with pagination and search.
     Retrieves from ChromaDB (the source of truth for candidate profiles).
     """
-    query_args = {
-        "include": ["documents", "metadatas"],
-        "limit": limit,
-        "offset": skip,
-    }
+    all_results = vector_store.collection.get(include=["documents", "metadatas"])
     
-    # Need total count for pagination
-    count_args = {}
-    
-    if search:
-        query_args["where_document"] = {"$contains": search}
-        count_args["where_document"] = {"$contains": search}
-
-    all_results = vector_store.collection.get(**query_args)
-    total_count = vector_store.collection.count() if not search else len(vector_store.collection.get(**count_args).get('ids', []))
-
     candidates = []
     if all_results and all_results["ids"]:
         for i, cid in enumerate(all_results["ids"]):
             meta = all_results["metadatas"][i] if all_results["metadatas"] else {}
             doc = all_results["documents"][i] if all_results["documents"] else ""
+            
+            if search:
+                search_lower = search.lower()
+                doc_lower = doc.lower()
+                name_lower = str(meta.get("name", "")).lower()
+                email_lower = str(meta.get("email", "")).lower()
+                skills_lower = str(meta.get("skills", "")).lower()
+                title_lower = str(meta.get("current_title", "")).lower()
+                
+                if not (search_lower in doc_lower or 
+                        search_lower in name_lower or 
+                        search_lower in email_lower or 
+                        search_lower in skills_lower or 
+                        search_lower in title_lower):
+                    continue
+            
             candidates.append(_build_candidate_out(cid, meta, doc))
-
-    return CandidateListResponse(total=total_count, candidates=candidates)
+            
+    total_count = len(candidates)
+    paginated_candidates = candidates[skip : skip + limit]
+    
+    return CandidateListResponse(total=total_count, candidates=paginated_candidates)
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)
@@ -365,3 +370,13 @@ async def get_candidate(candidate_id: str, hr_email: str = Depends(get_current_h
     doc = result.get("document", "")
 
     return _build_candidate_out(result["id"], meta, doc)
+
+@router.delete("/{candidate_id}")
+async def delete_candidate(candidate_id: str, hr_email: str = Depends(get_current_hr)):
+    """Deletes a candidate from the system."""
+    try:
+        vector_store.delete_candidate(candidate_id)
+        return {"status": "success", "message": f"Candidate {candidate_id} deleted."}
+    except Exception as e:
+        logger.error(f"Failed to delete candidate {candidate_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete candidate: {e}")

@@ -24,6 +24,10 @@ class EvalResultOut(BaseModel):
     context_data: list | None = None
 
 
+class EmailUpdateRequest(BaseModel):
+    subject: str
+    body: str
+
 class ReviewDecision(BaseModel):
     decision: str  # e.g., "approved", "rejected", "edited"
     notes: str | None = None
@@ -50,46 +54,126 @@ async def get_review_queue(db: AsyncSession = Depends(get_db), hr_email: str = D
             
             # Attach context data based on agent
             context_data = []
-            if e.agent == "JDAnalyser":
-                from app.infra.db import PipelineContext
-                pc_query = select(PipelineContext).where(PipelineContext.run_id == e.run_id)
-                pc_res = await db.execute(pc_query)
-                pc_obj = pc_res.scalars().first()
-                if pc_obj and pc_obj.context_data and "extracted_jd" in pc_obj.context_data:
-                    context_data.append(pc_obj.context_data["extracted_jd"])
-            elif e.agent == "CandidateScorer":
-                from app.infra.vector_store import vector_store
-                c_query = select(ScoredCandidateDB).where(ScoredCandidateDB.run_id == e.run_id)
-                c_res = await db.execute(c_query)
-                candidates = c_res.scalars().all()
-                for c in candidates:
-                    cand_data = vector_store.get_candidate(c.candidate_id)
-                    cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
-                    context_data.append({
-                        "candidate_id": c.candidate_id,
-                        "candidate_name": cand_name,
-                        "final_score": c.final_score,
-                        "rationale": c.rationale_json
-                    })
-            elif e.agent == "OutreachDrafter":
-                from app.infra.vector_store import vector_store
-                em_query = select(OutreachEmailDB).where(OutreachEmailDB.run_id == e.run_id)
-                em_res = await db.execute(em_query)
-                emails = em_res.scalars().all()
-                for em in emails:
-                    cand_data = vector_store.get_candidate(em.candidate_id)
-                    cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
-                    context_data.append({
-                        "candidate_id": em.candidate_id,
-                        "candidate_name": cand_name,
-                        "subject": em.subject,
-                        "body": em.body
-                    })
+            from app.infra.db import PipelineContext
+            from app.infra.vector_store import vector_store
+            
+            pc_query = select(PipelineContext).where(PipelineContext.run_id == e.run_id)
+            pc_res = await db.execute(pc_query)
+            pc_obj = pc_res.scalars().first()
+            
+            if pc_obj and pc_obj.context_data:
+                if e.agent == "JDAnalyser":
+                    if "extracted_jd" in pc_obj.context_data:
+                        context_data.append(pc_obj.context_data["extracted_jd"])
+                elif e.agent == "CandidateScorer":
+                    scored_candidates = pc_obj.context_data.get("scored_candidates", [])
+                    for c in scored_candidates:
+                        cand_id = c.get("candidate_id")
+                        cand_data = vector_store.get_candidate(cand_id)
+                        cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
+                        context_data.append({
+                            "candidate_id": cand_id,
+                            "candidate_name": cand_name,
+                            "final_score": c.get("final_score"),
+                            "rationale": {
+                                "matched_skills": c.get("matched_skills"),
+                                "missing_skills": c.get("missing_skills"),
+                                "reasoning": c.get("rationale")
+                            }
+                        })
+                elif e.agent == "OutreachDrafter":
+                    emails = pc_obj.context_data.get("outreach_emails", [])
+                    for em in emails:
+                        cand_id = em.get("candidate_id")
+                        cand_data = vector_store.get_candidate(cand_id)
+                        cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
+                        cand_email = cand_data["metadata"].get("email", "Unknown Email") if cand_data else "Unknown Email"
+                        context_data.append({
+                            "id": f"{e.run_id}_{cand_id}",
+                            "candidate_id": cand_id,
+                            "candidate_name": cand_name,
+                            "candidate_email": cand_email,
+                            "subject": em.get("subject"),
+                            "body": em.get("body")
+                        })
             
             out_dict["context_data"] = context_data
             out.append(EvalResultOut(**out_dict))
             
     return out
+
+@router.delete("/email/{email_id}")
+async def delete_email(email_id: str, db: AsyncSession = Depends(get_db), hr_email: str = Depends(get_current_hr)):
+    """Delete a drafted email (e.g. if HR rejects this specific candidate's outreach)."""
+    from app.infra.db import PipelineContext
+    from fastapi import HTTPException
+    
+    # email_id is in format {run_id}_{candidate_id}
+    parts = email_id.split("_", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid email ID format")
+    run_id, candidate_id = parts[0], parts[1]
+    
+    pc_query = select(PipelineContext).where(PipelineContext.run_id == run_id)
+    pc_res = await db.execute(pc_query)
+    pc_obj = pc_res.scalars().first()
+    
+    if pc_obj and "outreach_emails" in pc_obj.context_data:
+        emails = pc_obj.context_data["outreach_emails"]
+        # Find the email
+        for i, em in enumerate(emails):
+            if em.get("candidate_id") == candidate_id:
+                emails.pop(i)
+                pc_obj.context_data["outreach_emails"] = emails
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(pc_obj, "context_data")
+                db.add(pc_obj)
+                await db.commit()
+                return {"status": "success", "message": "Email removed successfully"}
+    
+    raise HTTPException(status_code=404, detail="Email not found")
+
+
+@router.put("/email/{email_id}")
+async def update_email(
+    email_id: str,
+    update_data: EmailUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    hr_email: str = Depends(get_current_hr)
+):
+    """Update the subject and body of a drafted email before approval."""
+    from app.infra.db import PipelineContext
+    from fastapi import HTTPException
+    
+    parts = email_id.split("_", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid email ID format")
+    run_id, candidate_id = parts[0], parts[1]
+    
+    pc_query = select(PipelineContext).where(PipelineContext.run_id == run_id)
+    pc_res = await db.execute(pc_query)
+    pc_obj = pc_res.scalars().first()
+    
+    if not pc_obj or not pc_obj.context_data:
+        raise HTTPException(status_code=404, detail="Pipeline context not found")
+        
+    emails = pc_obj.context_data.get("outreach_emails", [])
+    updated = False
+    for em in emails:
+        if em.get("candidate_id") == candidate_id:
+            em["subject"] = update_data.subject
+            em["body"] = update_data.body
+            updated = True
+            break
+            
+    if not updated:
+        raise HTTPException(status_code=404, detail="Email not found")
+        
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(pc_obj, "context_data")
+    db.add(pc_obj)
+    await db.commit()
+    return {"status": "success", "message": "Email updated successfully"}
 
 
 @router.post("/{eval_id}/submit")
@@ -117,6 +201,17 @@ async def submit_review(
     db.add(review)
     await db.commit()
     
+    if decision.decision == "rejected":
+        # Terminate the pipeline run immediately
+        db_run = await db.get(Run, eval_res.run_id)
+        if db_run:
+            db_run.status = "failed"
+            await db.commit()
+            from app.orchestration.events import event_emitter
+            await event_emitter.emit_error(db_run.id, f"Pipeline terminated due to rejected review for agent: {eval_res.agent}")
+            
+        return {"status": "success", "message": "Review rejected. Pipeline terminated."}
+
     # Check if there are any pending reviews for this run
     from app.infra.db import Run
     pending_query = select(EvalResultDB).where(

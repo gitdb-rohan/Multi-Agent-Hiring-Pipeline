@@ -212,20 +212,22 @@ Three independent MCP servers, each a separate deployable process (stdio for loc
 |---|---|---|
 | `jd-parser-server` | `parse_raw_jd`, `normalize_skill_taxonomy` | Pure LLM + dynamic LLM skill taxonomy mapping |
 | `candidate-db-server` | `vector_search_candidates`, `get_candidate_profile`, `upsert_candidate` | ChromaDB |
-| `email-server` | `send_outreach_email` | Placeholder / SendGrid (Needs implementation) |
+| `email-server` | `send_outreach_email` | Standard SMTP Email Dispatcher |
 
-> **Note on email-server:** Emails are currently only generated as drafts and stored in Postgres. To actually send them, the `OutreachDrafter` will need to be connected to an SMTP/SendGrid service.
-
-Design rules: each tool is minimal and single-purpose (avoid sprawling do-everything tools), every tool call is treated as a security boundary (input validation + auth), and servers are versioned/pinned (e.g., `jd-parser-server:v1.0.0`) so schema drift doesn't silently break agents.
+> **Note on email-server:** Emails are generated as drafts and stored in Postgres. The server sends real emails via SMTP if credentials are provided in `.env` (SMTP_HOST, SMTP_USER, etc). If no real candidate email is found in Chroma, it falls back to a simulated domain.
 
 ---
 
-## 8. Evaluation Layer (G-Eval)
+## 8. Evaluation Layer & Human-in-the-Loop (HITL)
 
 - Implements G-Eval's chain-of-thought scoring approach: the eval LLM is given the task definition + rubric, reasons step by step, then emits a numeric score per dimension.
 - Dimensions scored per agent output: **relevance**, **faithfulness** (no hallucinated facts vs. source JD/candidate profile), **completeness**.
 - Each agent type has its own threshold in `evaluation/thresholds.py` (e.g., JD Analyser faithfulness < 0.8 → flag).
-- Flagged outputs are written to a `human_review_queue` table with the reason, original output, and eval rationale attached — never silently dropped or silently passed through.
+- Flagged outputs are written to a `human_review_queue` and the pipeline pauses (`paused_for_review`).
+- **Human-in-the-Loop Review UI:**
+  - HR can review and manually **edit the Parsed JD** data.
+  - HR can review **Candidate Match Scores**, select candidates from a dropdown, and reject specific candidates from the pipeline while approving others.
+  - HR can review **Drafted Emails**, edit the subject/body, and reject specific emails before final approval.
 - `tests/eval/` holds a golden set of ~20 JDs + expected extractions used as a regression suite — run this before every deploy.
 
 ---

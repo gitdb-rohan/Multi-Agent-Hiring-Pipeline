@@ -204,6 +204,10 @@ class PipelineStateMachine:
             if not eval_result:
                 return None
 
+            if task.agent == "OutreachDrafter" and not self.context.get("auto_approve", False):
+                eval_result.needs_human_review = True
+                eval_result.review_reason = "Mandatory human review for all outreach emails."
+
             logger.info(
                 f"[{self.run_id}] G-Eval for {task.agent}: "
                 f"rel={eval_result.relevance:.2f} faith={eval_result.faithfulness:.2f} "

@@ -61,15 +61,25 @@ document.addEventListener('DOMContentLoaded', () => {
     // Theme Toggle Logic
     const themeToggle = document.getElementById('theme-toggle');
     if(themeToggle) {
-        // Check saved theme
+        const updateThemeIcon = (theme) => {
+            const icon = themeToggle.querySelector('svg');
+            if(theme === 'dark') {
+                icon.innerHTML = '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+            } else {
+                icon.innerHTML = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>';
+            }
+        };
+
         const savedTheme = localStorage.getItem('theme') || 'light';
         document.documentElement.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
         
         themeToggle.addEventListener('click', () => {
             const currentTheme = document.documentElement.getAttribute('data-theme');
             const newTheme = currentTheme === 'light' ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', newTheme);
             localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
         });
     }
 
@@ -187,16 +197,40 @@ document.addEventListener('DOMContentLoaded', () => {
     loadBranding();
 
     // ────────────────────────────────────────
+    // History Sidebar
+    // ────────────────────────────────────────
+    const historyToggle = document.getElementById('history-toggle');
+    const closeHistory = document.getElementById('close-history');
+    const historySidebar = document.getElementById('history-sidebar');
+
+    if(historyToggle && historySidebar) {
+        historyToggle.addEventListener('click', () => {
+            historySidebar.classList.toggle('collapsed');
+            if(!historySidebar.classList.contains('collapsed')) {
+                fetchPastRuns();
+            }
+        });
+    }
+
+    if(closeHistory && historySidebar) {
+        closeHistory.addEventListener('click', () => {
+            historySidebar.classList.add('collapsed');
+        });
+    }
+
+    // ────────────────────────────────────────
     // Navigation
     // ────────────────────────────────────────
     const navPills = document.querySelectorAll('.nav-pill');
     const views = document.querySelectorAll('.view');
 
     navPills.forEach(pill => {
+        if (pill.id === 'history-toggle') return; // Handled separately
         pill.addEventListener('click', () => {
             navPills.forEach(p => p.classList.remove('active'));
             pill.classList.add('active');
             const target = pill.dataset.target;
+            if(!target) return;
             views.forEach(v => {
                 v.classList.remove('active');
                 if (v.id === target) v.classList.add('active');
@@ -378,14 +412,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             container.innerHTML = runs.map(r => `
-                <div style="padding: 1rem; background: var(--bg); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-weight: 500; margin-bottom: 5px;">${r.goal_text}</div>
-                        <div style="font-size: 12px; color: var(--text-secondary);">Date: ${new Date(r.created_at).toLocaleString()} &bull; Status: <span style="text-transform: capitalize;">${r.status}</span></div>
+                <div class="history-item" onclick="viewRun('${r.id}')">
+                    <button class="delete-btn" onclick="deleteRun(event, '${r.id}')" title="Delete Run">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                    </button>
+                    <h4>${r.goal_text || 'Pipeline Run'}</h4>
+                    <div class="date">${new Date(r.created_at).toLocaleString()}</div>
+                    <div class="date" style="margin-top: 4px; text-transform: capitalize; display: flex; justify-content: space-between; align-items: center;">
+                        Status: ${r.status}
+                        ${(r.status === 'completed' || r.status === 'done' || r.status === 'paused_for_review') ? `
+                            <button class="btn-text" style="font-size: 0.75rem; color: var(--accent); padding: 0;" onclick="openContinueModal(event, '${r.id}')">Resume</button>
+                        ` : ''}
                     </div>
-                    ${(r.status === 'completed' || r.status === 'done' || r.status === 'paused_for_review') ? `
-                        <button class="btn-secondary" style="margin: 0;" onclick="continuePipeline('${r.id}')">Continue</button>
-                    ` : ''}
                 </div>
             `).join('');
         } catch (err) {
@@ -394,9 +432,64 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.fetchPastRuns = fetchPastRuns;
 
-    window.continuePipeline = async function(runId) {
-        const extraK = prompt('How many additional candidates would you like to process?', '5');
-        if (!extraK) return;
+    window.deleteRun = async function(e, runId) {
+        e.stopPropagation(); // prevent clicking the history item
+        if(!confirm("Are you sure you want to delete this run and all its data?")) return;
+        
+        try {
+            const res = await fetch(`/pipeline/run/${runId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
+            if (res.ok) {
+                fetchPastRuns();
+            } else {
+                alert("Failed to delete run.");
+            }
+        } catch (err) {
+            alert("Error deleting run.");
+        }
+    };
+
+    window.viewRun = function(runId) {
+        // Switch to pipeline view
+        const navPills = document.querySelectorAll('.nav-pill');
+        const views = document.querySelectorAll('.view');
+        navPills.forEach(p => p.classList.remove('active'));
+        const pipelineBtn = document.querySelector('.nav-pill[data-target="pipeline"]');
+        if (pipelineBtn) pipelineBtn.classList.add('active');
+        
+        views.forEach(v => {
+            v.classList.remove('active');
+            if (v.id === 'pipeline') v.classList.add('active');
+        });
+        
+        clearTimeline();
+        addTimelineItem('Viewing Past Run', `Run ID: ${runId}`, 'done');
+        setStatus('done', 'VIEWING PAST RUN');
+        document.getElementById('results-content').innerHTML = '';
+        fetchEmails(runId);
+        showResults();
+    };
+
+    window.openContinueModal = function(e, runId) {
+        e.stopPropagation();
+        document.getElementById('continue-run-id').value = runId;
+        document.getElementById('continue-modal').classList.remove('hidden');
+    };
+
+    window.closeContinueModal = function() {
+        document.getElementById('continue-modal').classList.add('hidden');
+    };
+
+    window.submitContinuePipeline = async function() {
+        const runId = document.getElementById('continue-run-id').value;
+        const extraK = document.getElementById('continue-extra-k').value;
+        if (!runId || !extraK) return;
+        
+        closeContinueModal();
+        viewRun(runId); // Switch to the pipeline tab to see what's happening
+        
         try {
             const res = await fetch(`/pipeline/${runId}/continue`, {
                 method: 'POST',
@@ -407,11 +500,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ extra_k: parseInt(extraK, 10) })
             });
             if (res.ok) {
-                alert('Pipeline resuming...');
-                fetchPastRuns();
-                clearTimeline();
-                addTimelineItem('Pipeline Resumed', `Run ID: ${runId}`, 'running');
+                addTimelineItem('Pipeline Resumed', `Run ID: ${runId}, Extra K: ${extraK}`, 'running');
                 connectSSE(runId);
+            } else {
+                alert('Failed to resume pipeline.');
             }
         } catch (err) {
             alert('Failed to resume pipeline.');
@@ -616,7 +708,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             candidateList.innerHTML = candidates.map(c => `
-                <div class="cand-card" style="cursor: pointer;" onclick="openCandidateModal('${c.id}')">
+                <div class="cand-card" style="cursor: pointer; position: relative;" onclick="openCandidateModal('${c.id}')">
+                    <button class="delete-btn" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #ff4757; cursor: pointer; padding: 4px; border-radius: 4px; z-index: 2;" onclick="deleteCandidate(event, '${c.id}')" title="Delete Candidate">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                    </button>
                     <div class="cand-name">${c.name || 'Unknown'}</div>
                     <div class="cand-email">${c.email || 'No email'}</div>
                     <div class="cand-meta">
@@ -635,6 +730,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     window.fetchCandidates = fetchCandidates;
+    
+    window.deleteCandidate = async function(e, candidateId) {
+        e.stopPropagation(); // prevent opening the modal
+        if(!confirm("Are you sure you want to delete this candidate?")) return;
+        
+        try {
+            const res = await fetch(`/candidates/${candidateId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
+            if (res.ok) {
+                fetchCandidates();
+            } else {
+                alert("Failed to delete candidate.");
+            }
+        } catch (err) {
+            alert("Error deleting candidate.");
+        }
+    };
     
     window.openCandidateModal = async function(id) {
         try {
@@ -682,6 +796,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (inlineSection) inlineSection.classList.remove('hidden');
             document.getElementById('review-badge').textContent = queue.length;
             document.getElementById('review-badge').classList.remove('hidden');
+            
+            window.currentReviewQueue = queue;
 
             container.innerHTML = queue.map(item => {
                 let contextHtml = '';
@@ -697,24 +813,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <p><strong>Red Flags:</strong> ${jd.red_flags && jd.red_flags.length > 0 ? jd.red_flags.map(rf => `<br>• [${rf.severity.toUpperCase()}] ${rf.flag}`).join('') : 'None'}</p>
                                 <p><strong>Confidence:</strong> ${jd.confidence?.toFixed(2) || 'N/A'}</p>
                             </div>
+                            <button class="btn-secondary" style="margin-top: 10px;" onclick="window.openJDEditorModal('${item.id}')">Edit Parsed JD</button>
                         ` + '</div>';
                     } else if (item.agent === 'CandidateScorer') {
-                        contextHtml = '<div class="review-context"><h4>Candidate Scores</h4>' + item.context_data.map(c => `
-                            <div class="rationale-box">
-                                <strong>Candidate: ${c.candidate_name}</strong> <span style="font-size: 0.8em; color: var(--text-secondary);">(${c.candidate_id})</span> - Score: ${c.final_score.toFixed(2)}
-                                <p><strong>Matched Skills:</strong> ${c.rationale?.matched_skills?.join(', ') || 'None'}</p>
-                                <p><strong>Missing Skills:</strong> ${c.rationale?.missing_skills?.join(', ') || 'None'}</p>
-                                <p><strong>Reasoning:</strong> ${c.rationale?.reasoning || 'N/A'}</p>
-                            </div>
-                        `).join('') + '</div>';
+                        contextHtml = `<div class="review-context">
+                            <button class="btn-secondary" style="margin-top: 10px;" onclick="openCandidateScoreModal('${item.id}')">View Candidate Matches</button>
+                        </div>`;
                     } else if (item.agent === 'OutreachDrafter') {
-                        contextHtml = '<div class="review-context"><h4>Drafted Emails</h4>' + item.context_data.map(e => `
-                            <div class="email-preview">
-                                <strong>To Candidate: ${e.candidate_name}</strong> <span style="font-size: 0.8em; color: var(--text-secondary);">(${e.candidate_id})</span>
-                                <p><strong>Subject:</strong> ${e.subject}</p>
-                                <pre>${e.body}</pre>
-                            </div>
-                        `).join('') + '</div>';
+                        contextHtml = `<div class="review-context">
+                            <button class="btn-secondary" style="margin-top: 10px;" onclick="openEmailEditorModal('${item.id}')">Review & Edit Emails</button>
+                        </div>`;
                     }
                 }
 
@@ -743,6 +851,248 @@ document.addEventListener('DOMContentLoaded', () => {
             container.innerHTML = `<div class="empty-state"><p style="color:var(--red)">Error: ${err.message}</p></div>`;
         }
     }
+
+    window.currentReviewItem = null;
+
+    window.openCandidateScoreModal = function(evalId) {
+        const item = window.currentReviewQueue.find(i => i.id === evalId);
+        if (!item || !item.context_data || item.context_data.length === 0) return;
+        
+        window.currentReviewItem = item;
+        
+        const select = document.getElementById('score-cand-select');
+        select.innerHTML = item.context_data.map(c => 
+            `<option value="${c.candidate_id}">${c.candidate_name} (Score: ${c.final_score.toFixed(2)})</option>`
+        ).join('');
+        
+        document.getElementById('candidate-score-modal').classList.remove('hidden');
+        window.renderScoreCandidate(item.context_data[0].candidate_id);
+    };
+    
+    window.renderScoreCandidate = function(candidateId) {
+        if (!window.currentReviewItem) return;
+        const c = window.currentReviewItem.context_data.find(x => x.candidate_id === candidateId);
+        if (!c) return;
+        
+        document.getElementById('score-cand-name').textContent = `${c.candidate_name} — Score: ${c.final_score.toFixed(2)}`;
+        
+        const matched = c.rationale?.matched_skills || [];
+        const missing = c.rationale?.missing_skills || [];
+        
+        document.getElementById('score-matched-skills').innerHTML = matched.map(s => `<span style="background: var(--green-bg); padding: 2px 6px; border-radius: 4px; font-size: 13px;">✓ ${s}</span>`).join('');
+        document.getElementById('score-missing-skills').innerHTML = missing.map(s => `<span style="background: var(--red-bg); padding: 2px 6px; border-radius: 4px; font-size: 13px;">✗ ${s}</span>`).join('');
+        document.getElementById('score-reasoning').textContent = c.rationale?.reasoning || 'No reasoning provided.';
+    };
+
+    window.closeScoreModal = function() {
+        document.getElementById('candidate-score-modal').classList.add('hidden');
+    };
+
+    window.rejectCandidate = async function() {
+        if (!window.currentReviewItem) return;
+        const select = document.getElementById('score-cand-select');
+        const candidateId = select.value;
+        const runId = window.currentReviewItem.run_id;
+        
+        try {
+            const res = await fetch(`/pipeline/${runId}/candidate/${candidateId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                }
+            });
+            if (res.ok) {
+                alert('Candidate rejected and removed from pipeline.');
+                
+                // Remove from local memory
+                window.currentReviewItem.context_data = window.currentReviewItem.context_data.filter(c => c.candidate_id !== candidateId);
+                
+                // If there are no more candidates, close the modal
+                if (window.currentReviewItem.context_data.length === 0) {
+                    closeScoreModal();
+                    fetchReviewQueue(); // Re-render queue
+                } else {
+                    // Update dropdown
+                    select.innerHTML = window.currentReviewItem.context_data.map(c => 
+                        `<option value="${c.candidate_id}">${c.candidate_name} (Score: ${c.final_score.toFixed(2)})</option>`
+                    ).join('');
+                    
+                    // Render the first remaining one
+                    window.renderScoreCandidate(window.currentReviewItem.context_data[0].candidate_id);
+                }
+            } else {
+                alert('Failed to reject candidate.');
+            }
+        } catch (err) {
+            alert('Error rejecting candidate.');
+        }
+    };
+
+    window.openEmailEditorModal = function(evalId) {
+        const item = window.currentReviewQueue.find(i => i.id === evalId);
+        if (!item || !item.context_data || item.context_data.length === 0) return;
+        
+        window.currentReviewItem = item;
+        
+        const select = document.getElementById('edit-email-select');
+        select.innerHTML = item.context_data.map(e => 
+            `<option value="${e.id}">${e.candidate_name}</option>`
+        ).join('');
+        
+        document.getElementById('email-editor-modal').classList.remove('hidden');
+        window.renderEmailCandidate(item.context_data[0].id);
+    };
+    
+    window.renderEmailCandidate = function(emailId) {
+        if (!window.currentReviewItem) return;
+        const e = window.currentReviewItem.context_data.find(x => x.id === emailId);
+        if (!e) return;
+        
+        document.getElementById('edit-email-id').value = e.id;
+        document.getElementById('edit-email-to').textContent = e.candidate_email || `${e.candidate_name} (Email unknown)`;
+        document.getElementById('edit-email-subject').value = e.subject;
+        document.getElementById('edit-email-body').value = e.body;
+    };
+
+    window.closeEmailEditor = function() {
+        document.getElementById('email-editor-modal').classList.add('hidden');
+    };
+
+    window.saveEmailEdits = async function() {
+        const emailId = document.getElementById('edit-email-id').value;
+        const subject = document.getElementById('edit-email-subject').value;
+        const body = document.getElementById('edit-email-body').value;
+        
+        try {
+            const res = await fetch(`/review/email/${emailId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                },
+                body: JSON.stringify({ subject, body })
+            });
+            if (res.ok) {
+                alert('Email updated successfully!');
+                // Update local memory so if they switch dropdowns, it retains the change
+                if (window.currentReviewItem) {
+                    const e = window.currentReviewItem.context_data.find(x => x.id === emailId);
+                    if (e) {
+                        e.subject = subject;
+                        e.body = body;
+                    }
+                }
+            } else {
+                alert('Failed to update email.');
+            }
+        } catch (err) {
+            alert('Failed to update email.');
+        }
+    };
+
+    window.rejectEmail = async function() {
+        if (!window.currentReviewItem) return;
+        const select = document.getElementById('edit-email-select');
+        const emailId = select.value;
+        
+        try {
+            const res = await fetch(`/review/email/${emailId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                }
+            });
+            if (res.ok) {
+                alert('Email rejected and removed.');
+                
+                // Remove from local memory
+                window.currentReviewItem.context_data = window.currentReviewItem.context_data.filter(e => e.id !== emailId);
+                
+                // If there are no more emails, close the modal
+                if (window.currentReviewItem.context_data.length === 0) {
+                    closeEmailEditor();
+                    fetchReviewQueue(); // Re-render queue
+                } else {
+                    // Update dropdown
+                    select.innerHTML = window.currentReviewItem.context_data.map(e => 
+                        `<option value="${e.id}">${e.candidate_name}</option>`
+                    ).join('');
+                    
+                    // Render the first remaining one
+                    window.renderEmailCandidate(window.currentReviewItem.context_data[0].id);
+                }
+            } else {
+                alert('Failed to reject email.');
+            }
+        } catch (err) {
+            alert('Error rejecting email.');
+        }
+    };
+
+    window.openJDEditorModal = function(evalId) {
+        const item = window.currentReviewQueue.find(i => i.id === evalId);
+        if (!item || !item.context_data || item.context_data.length === 0) return;
+        
+        window.currentReviewItem = item;
+        const jd = item.context_data[0];
+        
+        document.getElementById('edit-jd-run-id').value = item.run_id;
+        document.getElementById('edit-jd-exp').value = jd.experience_band || '';
+        document.getElementById('edit-jd-min-yrs').value = jd.min_years_experience || 0;
+        document.getElementById('edit-jd-role').value = jd.role_title || '';
+        document.getElementById('edit-jd-req-skills').value = (jd.required_skills || []).join(', ');
+        
+        document.getElementById('jd-editor-modal').classList.remove('hidden');
+    };
+
+    window.closeJDEditor = function() {
+        document.getElementById('jd-editor-modal').classList.add('hidden');
+    };
+
+    window.saveJDEdits = async function() {
+        if (!window.currentReviewItem) return;
+        
+        const runId = document.getElementById('edit-jd-run-id').value;
+        const exp = document.getElementById('edit-jd-exp').value;
+        const minYrs = parseInt(document.getElementById('edit-jd-min-yrs').value, 10);
+        const role = document.getElementById('edit-jd-role').value;
+        const reqSkills = document.getElementById('edit-jd-req-skills').value.split(',').map(s => s.trim()).filter(s => s);
+        
+        const jd = window.currentReviewItem.context_data[0];
+        
+        const updatedJD = {
+            ...jd,
+            experience_band: exp,
+            min_years_experience: minYrs,
+            role_title: role,
+            required_skills: reqSkills
+        };
+        
+        try {
+            const res = await fetch(`/pipeline/${runId}/jd`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                },
+                body: JSON.stringify({ extracted_jd: updatedJD })
+            });
+            if (res.ok) {
+                alert('JD updated successfully!');
+                // Update local memory and re-render
+                jd.experience_band = exp;
+                jd.min_years_experience = minYrs;
+                jd.role_title = role;
+                jd.required_skills = reqSkills;
+                closeJDEditor();
+                fetchReviewQueue(); // Re-fetch to update the UI
+            } else {
+                alert('Failed to update JD.');
+            }
+        } catch (err) {
+            alert('Failed to update JD.');
+        }
+    };
 
     window.submitReview = async (evalId, decision, runId) => {
         try {
@@ -811,6 +1161,35 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Failed to submit review');
         }
     };
+
+    async function fetchEmails(runId) {
+        try {
+            const res = await fetch(`/pipeline/${runId}/emails`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
+            if (!res.ok) return;
+            const emails = await res.json();
+            
+            if(emails && emails.length > 0) {
+                const resultsContent = document.getElementById('results-content');
+                
+                const emailHtml = emails.map(e => `
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); padding: 1rem; margin-top: 1rem; flex-basis: 100%;">
+                        <h4 style="margin-top: 0;">To Candidate: ${e.candidate_id}</h4>
+                        <p style="margin-bottom: 5px;"><strong>Subject:</strong> ${e.subject}</p>
+                        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 0.9rem; color: var(--text-secondary); background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">${e.body}</pre>
+                        <div style="margin-top: 10px; text-transform: capitalize; font-size: 0.8rem; color: ${e.status === 'approved' ? 'var(--success)' : 'var(--warning)'};">
+                            Status: ${e.status}
+                        </div>
+                    </div>
+                `).join('');
+                
+                resultsContent.innerHTML += `<div style="margin-top: 1.5rem; width: 100%;"><h3>Generated Emails</h3>${emailHtml}</div>`;
+            }
+        } catch (err) {
+            console.error("Failed to fetch emails:", err);
+        }
+    }
 });
 
 

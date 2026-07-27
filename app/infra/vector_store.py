@@ -48,6 +48,14 @@ class VectorStore:
         )
         logger.info(f"Upserted candidate {candidate_id} to vector store.")
 
+    def delete_candidate(self, candidate_id: str):
+        """Deletes a candidate from the vector store."""
+        try:
+            self.collection.delete(ids=[candidate_id])
+            logger.info(f"Deleted candidate {candidate_id} from vector store.")
+        except Exception as e:
+            logger.error(f"Failed to delete candidate {candidate_id}: {e}")
+
     def search_candidates(self, query: str, top_k: int = 5) -> list[dict]:
         """Searches for semantically similar candidates based on the query."""
         results = self.collection.query(
