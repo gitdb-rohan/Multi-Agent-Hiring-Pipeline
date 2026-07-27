@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,23 +50,38 @@ async def get_review_queue(db: AsyncSession = Depends(get_db), hr_email: str = D
             
             # Attach context data based on agent
             context_data = []
-            if e.agent == "CandidateScorer":
+            if e.agent == "JDAnalyser":
+                from app.infra.db import PipelineContext
+                pc_query = select(PipelineContext).where(PipelineContext.run_id == e.run_id)
+                pc_res = await db.execute(pc_query)
+                pc_obj = pc_res.scalars().first()
+                if pc_obj and pc_obj.context_data and "extracted_jd" in pc_obj.context_data:
+                    context_data.append(pc_obj.context_data["extracted_jd"])
+            elif e.agent == "CandidateScorer":
+                from app.infra.vector_store import vector_store
                 c_query = select(ScoredCandidateDB).where(ScoredCandidateDB.run_id == e.run_id)
                 c_res = await db.execute(c_query)
                 candidates = c_res.scalars().all()
                 for c in candidates:
+                    cand_data = vector_store.get_candidate(c.candidate_id)
+                    cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
                     context_data.append({
                         "candidate_id": c.candidate_id,
+                        "candidate_name": cand_name,
                         "final_score": c.final_score,
                         "rationale": c.rationale_json
                     })
             elif e.agent == "OutreachDrafter":
+                from app.infra.vector_store import vector_store
                 em_query = select(OutreachEmailDB).where(OutreachEmailDB.run_id == e.run_id)
                 em_res = await db.execute(em_query)
                 emails = em_res.scalars().all()
                 for em in emails:
+                    cand_data = vector_store.get_candidate(em.candidate_id)
+                    cand_name = cand_data["metadata"].get("name", "Unknown Candidate") if cand_data else "Unknown Candidate"
                     context_data.append({
                         "candidate_id": em.candidate_id,
+                        "candidate_name": cand_name,
                         "subject": em.subject,
                         "body": em.body
                     })
@@ -81,6 +96,7 @@ async def get_review_queue(db: AsyncSession = Depends(get_db), hr_email: str = D
 async def submit_review(
     eval_id: str, 
     decision: ReviewDecision,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     hr_email: str = Depends(get_current_hr)
 ):
@@ -100,6 +116,26 @@ async def submit_review(
     
     db.add(review)
     await db.commit()
+    
+    # Check if there are any pending reviews for this run
+    from app.infra.db import Run
+    pending_query = select(EvalResultDB).where(
+        EvalResultDB.run_id == eval_res.run_id,
+        EvalResultDB.needs_review == True,
+        ~EvalResultDB.id.in_(
+            select(HumanReview.eval_result_id)
+        )
+    )
+    pending_res = await db.execute(pending_query)
+    pending_evals = pending_res.scalars().all()
+    
+    if len(pending_evals) == 0:
+        db_run = await db.get(Run, eval_res.run_id)
+        if db_run and db_run.status in ["paused_for_review", "needs_review"]:
+            db_run.status = "running"
+            await db.commit()
+            from app.worker import run_pipeline_in_background
+            background_tasks.add_task(run_pipeline_in_background, db_run.id)
     
     return {"status": "success", "message": "Review submitted successfully."}
 

@@ -1,6 +1,6 @@
 import asyncio
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 import logging
@@ -12,7 +12,7 @@ from app.api.auth import get_current_hr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.worker import run_pipeline_task
+from app.worker import run_pipeline_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class RunPipelineResponse(BaseModel):
 @router.post("/run", response_model=RunPipelineResponse)
 async def run_pipeline(
     payload: RunPipelineRequest, 
+    background_tasks: BackgroundTasks,
     hr_email: str = Depends(get_current_hr),
     db: AsyncSession = Depends(get_db)
 ):
@@ -49,13 +50,13 @@ async def run_pipeline(
     db.add(context_obj)
     await db.commit()
     
-    # Trigger Celery worker
-    run_pipeline_task.delay(db_run.id)
+    # Trigger background worker
+    background_tasks.add_task(run_pipeline_in_background, db_run.id)
     
     return RunPipelineResponse(
         run_id=db_run.id,
         status="pending",
-        message="Pipeline execution started in the background via Celery."
+        message="Pipeline execution started in the background."
     )
 
 @router.get("/{run_id}/state")
@@ -104,8 +105,13 @@ async def edit_extracted_jd(run_id: str, req: EditJDRequest, db: AsyncSession = 
     return {"status": "success", "message": "JD updated successfully"}
 
 @router.post("/{run_id}/resume")
-async def resume_pipeline(run_id: str, db: AsyncSession = Depends(get_db), hr_email: str = Depends(get_current_hr)):
-    """Explicitly unpause the pipeline and trigger the next Celery task tier."""
+async def resume_pipeline(
+    run_id: str, 
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db), 
+    hr_email: str = Depends(get_current_hr)
+):
+    """Explicitly unpause the pipeline and trigger the next task tier."""
     db_run = await db.get(Run, run_id)
     if not db_run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -116,8 +122,8 @@ async def resume_pipeline(run_id: str, db: AsyncSession = Depends(get_db), hr_em
     db_run.status = "running"
     await db.commit()
     
-    # Resume by dispatching to celery again
-    run_pipeline_task.delay(db_run.id)
+    # Resume by dispatching again
+    background_tasks.add_task(run_pipeline_in_background, db_run.id)
     
     return {"status": "success", "message": "Pipeline resumed"}
 

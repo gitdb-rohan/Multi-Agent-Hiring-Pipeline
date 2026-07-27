@@ -80,23 +80,19 @@ class PlannerAgent(BaseAgent):
         task_graph = self._build_task_graph(request)
         logger.info(f"Task graph built: {task_graph.summary()}")
 
-        # 2. Create state machine and seed context
-        sm = PipelineStateMachine(task_graph)
-        # Seed the shared context with initial data
-        sm.context = {
+        # 2. Return the graph and context (worker.py handles execution)
+        context = {
             "goal_text": request.goal_text,
             "raw_jd_text": request.raw_jd_text,
             "top_k": request.top_k,
             "strictness": request.strictness,
             "auto_approve": request.auto_approve,
         }
-        # 3. Run the pipeline
-        result = await sm.run()
 
         return PlannerResponse(
             run_id=task_graph.run_id,
-            status=result.get("status", "unknown"),
-            context=result.get("context", {}),
-            eval_results=result.get("eval_results", []),
-            graph_summary=result.get("graph_summary", {}),
+            status="planning_complete",
+            context=context,
+            eval_results=[],
+            graph_summary=task_graph.summary(),
         )

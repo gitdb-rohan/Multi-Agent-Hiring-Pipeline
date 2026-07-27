@@ -14,8 +14,44 @@
         if(hrToken) {
             config.headers['Authorization'] = 'Bearer ' + hrToken;
         }
-        return await originalFetch(resource, config);
+        
+        const res = await originalFetch(resource, config);
+        
+        // Globally catch 401 Unauthorized errors (except on the login endpoint itself)
+        if (res.status === 401 && typeof resource === 'string' && !resource.includes('/auth/login')) {
+            const modal = document.getElementById('session-modal');
+            if (modal) {
+                modal.classList.remove('hidden');
+            }
+        }
+        
+        return res;
     };
+    
+    const modalLogoutBtn = document.getElementById('modal-logout-btn');
+    if (modalLogoutBtn) {
+        modalLogoutBtn.addEventListener('click', () => {
+            localStorage.removeItem('hr_token');
+            localStorage.removeItem('hr_email');
+            window.location.href = '/login.html';
+        });
+    }
+
+    // Proactively listen for token expiry without waiting for a network request
+    setInterval(() => {
+        const token = localStorage.getItem('hr_token');
+        if (token && window.location.pathname !== '/login.html') {
+            try {
+                const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+                if (payload.exp && Date.now() >= payload.exp * 1000) {
+                    const modal = document.getElementById('session-modal');
+                    if (modal) modal.classList.remove('hidden');
+                }
+            } catch (e) {
+                // Ignore parsing errors
+            }
+        }
+    }, 10000); // Check every 10 seconds
 
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -59,6 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if(typeof fetchCandidates === 'function') fetchCandidates();
             if(typeof fetchReviewQueue === 'function') fetchReviewQueue();
             if(typeof fetchAuditLog === 'function') fetchAuditLog();
+            if(typeof fetchPastRuns === 'function') fetchPastRuns();
         } else {
             if(loginScreen) loginScreen.style.display = 'flex';
             if(userProfile) userProfile.style.display = 'none';
@@ -225,11 +262,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function connectSSE(runId) {
         if (eventSource) eventSource.close();
-        eventSource = new EventSource(`/pipeline/${runId}/stream`);
+        const hrToken = localStorage.getItem('hr_token');
+        eventSource = new EventSource(`/pipeline/${runId}/stream?token=${hrToken}`);
 
         eventSource.addEventListener('state_change', (e) => {
             const d = JSON.parse(e.data);
             addTimelineItem('State', `${d.data.old_state} → ${d.data.new_state}`, 'completed');
+            if (d.data.new_state === 'paused_for_review') {
+                fetchReviewQueue();
+            }
         });
 
         eventSource.addEventListener('agent_started', (e) => {
@@ -250,6 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const badge = document.getElementById('review-badge');
             badge.textContent = parseInt(badge.textContent || '0') + 1;
             badge.classList.remove('hidden');
+            fetchReviewQueue();
         });
 
         eventSource.addEventListener('run_completed', (e) => {
@@ -323,6 +365,60 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>`;
     }
 
+    async function fetchPastRuns() {
+        const container = document.getElementById('past-runs-container');
+        if (!container) return;
+        try {
+            const res = await fetch('/pipeline/runs', {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
+            const runs = await res.json();
+            if (runs.length === 0) {
+                container.innerHTML = '<div class="empty-state"><p>No past pipeline runs found.</p></div>';
+                return;
+            }
+            container.innerHTML = runs.map(r => `
+                <div style="padding: 1rem; background: var(--bg); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 500; margin-bottom: 5px;">${r.goal_text}</div>
+                        <div style="font-size: 12px; color: var(--text-secondary);">Date: ${new Date(r.created_at).toLocaleString()} &bull; Status: <span style="text-transform: capitalize;">${r.status}</span></div>
+                    </div>
+                    ${(r.status === 'completed' || r.status === 'done' || r.status === 'paused_for_review') ? `
+                        <button class="btn-secondary" style="margin: 0;" onclick="continuePipeline('${r.id}')">Continue</button>
+                    ` : ''}
+                </div>
+            `).join('');
+        } catch (err) {
+            container.innerHTML = '<div class="empty-state"><p>Error loading runs.</p></div>';
+        }
+    }
+    window.fetchPastRuns = fetchPastRuns;
+
+    window.continuePipeline = async function(runId) {
+        const extraK = prompt('How many additional candidates would you like to process?', '5');
+        if (!extraK) return;
+        try {
+            const res = await fetch(`/pipeline/${runId}/continue`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                },
+                body: JSON.stringify({ extra_k: parseInt(extraK, 10) })
+            });
+            if (res.ok) {
+                alert('Pipeline resuming...');
+                fetchPastRuns();
+                clearTimeline();
+                addTimelineItem('Pipeline Resumed', `Run ID: ${runId}`, 'running');
+                connectSSE(runId);
+            }
+        } catch (err) {
+            alert('Failed to resume pipeline.');
+        }
+    };
+
+
     // ────────────────────────────────────────
     // Candidate Management
     // ────────────────────────────────────────
@@ -331,6 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const uploadProgress = document.getElementById('upload-progress');
 
     // Drag & drop
+    fileInput.value = ''; // Force clear on page load to fix stuck browse button
     uploadZone.addEventListener('click', () => fileInput.click());
     uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
     uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
@@ -338,7 +435,11 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         uploadZone.classList.remove('dragover');
         const files = Array.from(e.dataTransfer.files).filter(f => f.name.match(/\.(pdf|docx)$/i));
-        if (files.length) uploadFiles(files);
+        if (files.length) {
+            uploadFiles(files);
+        } else {
+            showUploadStatus('error', 'Invalid file type. Please upload a PDF or DOCX file.');
+        }
     });
 
     fileInput.addEventListener('change', () => {
@@ -354,7 +455,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 fd.append('file', files[0]);
                 const res = await fetch('/candidates/ingest', { method: 'POST', body: fd });
                 const data = await res.json();
-                if (data.errors > 0) {
+                
+                if (!res.ok) {
+                    showUploadStatus('error', `Error: ${data.detail || 'Upload failed. Please try logging in again.'}`);
+                } else if (data.errors > 0) {
                     showUploadStatus('error', `Error: ${data.results[0].message}`);
                 } else {
                     showUploadStatus('success', `✓ Ingested: ${data.results[0].name} (${data.results[0].email})`);
@@ -377,10 +481,19 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInput.value = '';
     }
 
+    let uploadStatusTimer;
     function showUploadStatus(type, msg) {
         uploadProgress.className = `upload-progress ${type}`;
         uploadProgress.textContent = msg;
         uploadProgress.classList.remove('hidden');
+        
+        if (uploadStatusTimer) clearTimeout(uploadStatusTimer);
+        
+        if (type !== 'loading') {
+            uploadStatusTimer = setTimeout(() => {
+                uploadProgress.classList.add('hidden');
+            }, 15000);
+        }
     }
 
     // Folder import
@@ -461,65 +574,134 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Fetch & render candidates
-    const candidateList = document.getElementById('candidate-list');
+    const candidateList = document.getElementById('candidates-container');
     const candidateCount = document.getElementById('candidate-count');
+    
+    let currentPage = 1;
+    const pageSize = 20;
+    let currentSearch = "";
+
+    window.handleCandidateSearch = function(e) {
+        currentSearch = e.target.value;
+        currentPage = 1;
+        fetchCandidates();
+    };
+
+    window.changePage = function(delta) {
+        currentPage += delta;
+        if (currentPage < 1) currentPage = 1;
+        fetchCandidates();
+    };
 
     document.getElementById('refresh-candidates-btn').addEventListener('click', fetchCandidates);
 
     async function fetchCandidates() {
+        if(!candidateList) return;
         try {
-            const res = await fetch('/candidates/?limit=100');
+            const skip = (currentPage - 1) * pageSize;
+            const res = await fetch(`/candidates/?limit=${pageSize}&skip=${skip}&search=${encodeURIComponent(currentSearch)}`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
             if (!res.ok) throw new Error('Failed to load');
-            const candidates = await res.json();
-            candidateCount.textContent = `${candidates.length} candidate${candidates.length !== 1 ? 's' : ''}`;
+            const data = await res.json();
+            const candidates = data.candidates;
+            candidateCount.textContent = `${data.total} candidate${data.total !== 1 ? 's' : ''}`;
 
             if (candidates.length === 0) {
-                candidateList.innerHTML = '<div class="empty-state"><p>No candidates ingested yet. Upload resumes above.</p></div>';
+                candidateList.innerHTML = '<div class="empty-state"><p>No candidates found.</p></div>';
+                document.getElementById('prev-page-btn').disabled = true;
+                document.getElementById('next-page-btn').disabled = true;
+                document.getElementById('page-indicator').textContent = `Page ${currentPage}`;
                 return;
             }
 
             candidateList.innerHTML = candidates.map(c => `
-                <div class="cand-card">
+                <div class="cand-card" style="cursor: pointer;" onclick="openCandidateModal('${c.id}')">
                     <div class="cand-name">${c.name || 'Unknown'}</div>
                     <div class="cand-email">${c.email || 'No email'}</div>
                     <div class="cand-meta">
                         <span>${c.years_of_experience}y exp</span>
-                        ${c.previous_companies.length ? `<span>${c.previous_companies.filter(Boolean).join(', ')}</span>` : ''}
+                        ${c.current_title ? `<span>${c.current_title}</span>` : ''}
                     </div>
                     ${c.summary ? `<div class="cand-summary">${c.summary}</div>` : ''}
                 </div>
             `).join('');
+            
+            document.getElementById('prev-page-btn').disabled = currentPage === 1;
+            document.getElementById('next-page-btn').disabled = skip + candidates.length >= data.total;
+            document.getElementById('page-indicator').textContent = `Page ${currentPage}`;
         } catch (err) {
             candidateList.innerHTML = `<div class="empty-state"><p>Could not load candidates: ${err.message}</p></div>`;
         }
     }
+    window.fetchCandidates = fetchCandidates;
+    
+    window.openCandidateModal = async function(id) {
+        try {
+            const res = await fetch(`/candidates/${id}`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
+            const c = await res.json();
+            document.getElementById('modal-cand-name').textContent = c.name || 'Unknown';
+            document.getElementById('modal-cand-email').textContent = c.email || 'No email';
+            document.getElementById('modal-cand-title').textContent = c.current_title || '';
+            document.getElementById('modal-cand-skills').textContent = c.skills && c.skills.length ? c.skills.join(', ') : 'None extracted';
+            document.getElementById('modal-cand-exp').textContent = c.years_of_experience;
+            document.getElementById('modal-cand-companies').textContent = c.previous_companies && c.previous_companies.length ? c.previous_companies.join(', ') : 'None listed';
+            document.getElementById('modal-cand-summary').textContent = c.summary || 'No summary available.';
+            
+            document.getElementById('candidate-modal').classList.remove('hidden');
+        } catch (err) {
+            alert('Failed to load candidate details.');
+        }
+    };
+
+    window.closeCandidateModal = function() {
+        document.getElementById('candidate-modal').classList.add('hidden');
+    };
 
     // ────────────────────────────────────────
     // Review Queue
     // ────────────────────────────────────────
     async function fetchReviewQueue() {
         const container = document.getElementById('review-container');
+        const inlineSection = document.getElementById('inline-review-section');
         try {
-            const res = await fetch('/review/queue');
+            const res = await fetch('/review/queue', {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
             if (!res.ok) throw new Error('Failed to fetch');
             const queue = await res.json();
 
             if (queue.length === 0) {
-                container.innerHTML = '<div class="empty-state"><p>No items in the review queue. All good.</p></div>';
+                if (inlineSection) inlineSection.classList.add('hidden');
                 document.getElementById('review-badge').classList.add('hidden');
                 return;
             }
 
+            if (inlineSection) inlineSection.classList.remove('hidden');
             document.getElementById('review-badge').textContent = queue.length;
             document.getElementById('review-badge').classList.remove('hidden');
 
             container.innerHTML = queue.map(item => {
                 let contextHtml = '';
                 if (item.context_data && item.context_data.length > 0) {
-                    if (item.agent === 'CandidateScorer') {
+                    if (item.agent === 'JDAnalyser') {
+                        const jd = item.context_data[0];
+                        contextHtml = '<div class="review-context"><h4>Parsed Job Description</h4>' + `
+                            <div class="rationale-box">
+                                <p><strong>Role:</strong> ${jd.role_title || 'N/A'}</p>
+                                <p><strong>Required Skills:</strong> ${jd.required_skills?.join(', ') || 'None'}</p>
+                                <p><strong>Nice-to-Have Skills:</strong> ${jd.nice_to_have_skills?.join(', ') || 'None'}</p>
+                                <p><strong>Experience:</strong> ${jd.experience_band || 'N/A'} (min ${jd.min_years_experience || 0} years)</p>
+                                <p><strong>Red Flags:</strong> ${jd.red_flags && jd.red_flags.length > 0 ? jd.red_flags.map(rf => `<br>• [${rf.severity.toUpperCase()}] ${rf.flag}`).join('') : 'None'}</p>
+                                <p><strong>Confidence:</strong> ${jd.confidence?.toFixed(2) || 'N/A'}</p>
+                            </div>
+                        ` + '</div>';
+                    } else if (item.agent === 'CandidateScorer') {
                         contextHtml = '<div class="review-context"><h4>Candidate Scores</h4>' + item.context_data.map(c => `
                             <div class="rationale-box">
-                                <strong>Candidate: ${c.candidate_id}</strong> (Score: ${c.final_score.toFixed(2)})
+                                <strong>Candidate: ${c.candidate_name}</strong> <span style="font-size: 0.8em; color: var(--text-secondary);">(${c.candidate_id})</span> - Score: ${c.final_score.toFixed(2)}
                                 <p><strong>Matched Skills:</strong> ${c.rationale?.matched_skills?.join(', ') || 'None'}</p>
                                 <p><strong>Missing Skills:</strong> ${c.rationale?.missing_skills?.join(', ') || 'None'}</p>
                                 <p><strong>Reasoning:</strong> ${c.rationale?.reasoning || 'N/A'}</p>
@@ -528,7 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else if (item.agent === 'OutreachDrafter') {
                         contextHtml = '<div class="review-context"><h4>Drafted Emails</h4>' + item.context_data.map(e => `
                             <div class="email-preview">
-                                <strong>To Candidate: ${e.candidate_id}</strong>
+                                <strong>To Candidate: ${e.candidate_name}</strong> <span style="font-size: 0.8em; color: var(--text-secondary);">(${e.candidate_id})</span>
                                 <p><strong>Subject:</strong> ${e.subject}</p>
                                 <pre>${e.body}</pre>
                             </div>
@@ -557,15 +739,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 `;
             }).join('');
         } catch (err) {
+            if (inlineSection) inlineSection.classList.remove('hidden');
             container.innerHTML = `<div class="empty-state"><p style="color:var(--red)">Error: ${err.message}</p></div>`;
         }
     }
 
-    window.submitReview = async (evalId, decision) => {
+    window.submitReview = async (evalId, decision, runId) => {
         try {
             await fetch(`/review/${evalId}/submit`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('hr_token')}`
+                },
                 body: JSON.stringify({ decision, reviewer: 'Recruiter' })
             });
             const card = document.getElementById(`review-${evalId}`);
@@ -573,7 +759,54 @@ document.addEventListener('DOMContentLoaded', () => {
             const badge = document.getElementById('review-badge');
             let count = parseInt(badge.textContent) - 1;
             badge.textContent = count;
-            if (count <= 0) badge.classList.add('hidden');
+            if (count <= 0) {
+                badge.classList.add('hidden');
+                document.getElementById('inline-review-section').classList.add('hidden');
+                setStatus('running', 'Running');
+                
+                // Reconnect SSE if not active so we can hear when it finishes
+                if (runId && (!eventSource || eventSource.readyState === EventSource.CLOSED)) {
+                    eventSource = new EventSource(`/pipeline/${runId}/stream`);
+                    
+                    eventSource.addEventListener('state_change', (e) => {
+                        const d = JSON.parse(e.data);
+                        addTimelineItem('State', `${d.data.old_state} → ${d.data.new_state}`, 'completed');
+                        if (d.data.new_state === 'paused_for_review') {
+                            fetchReviewQueue();
+                        }
+                    });
+
+                    eventSource.addEventListener('agent_started', (e) => {
+                        const d = JSON.parse(e.data);
+                        addTimelineItem(d.data.agent, `Started task: ${d.data.task}`, 'running');
+                    });
+
+                    eventSource.addEventListener('agent_completed', (e) => {
+                        const d = JSON.parse(e.data);
+                        addTimelineItem(d.data.agent, `Completed: ${d.data.summary} (${d.data.duration_s}s)`, 'completed');
+                    });
+
+                    eventSource.addEventListener('run_completed', (e) => {
+                        const d = JSON.parse(e.data);
+                        const status = d.data.status;
+                        addTimelineItem('Done', `Pipeline finished: ${status}`, status === 'failed' ? 'error' : 'done');
+                        setStatus(status === 'failed' ? 'error' : status, status.toUpperCase());
+                        fetchEmails(runId);
+                        eventSource.close();
+                    });
+
+                    eventSource.addEventListener('error', (e) => {
+                        try {
+                            const d = JSON.parse(e.data);
+                            addTimelineItem('Error', d.data.error, 'error');
+                            setStatus('error', 'Error');
+                        } catch {
+                            console.log("SSE Connection dropped");
+                        }
+                        eventSource.close();
+                    });
+                }
+            }
         } catch {
             alert('Failed to submit review');
         }
@@ -692,7 +925,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if(!container) return;
         
         try {
-            const res = await fetch('/audit/');
+            const res = await fetch('/audit/', {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('hr_token')}` }
+            });
             const logs = await res.json();
             if(!logs.length) {
                 container.innerHTML = '<div class="empty-state"><p>No audit logs found.</p></div>';

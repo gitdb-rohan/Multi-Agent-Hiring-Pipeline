@@ -31,3 +31,4 @@ htmlcov/
 
 # MacOS
 .DS_Store
+tmp/

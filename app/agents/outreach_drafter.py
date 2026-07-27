@@ -24,6 +24,7 @@ class OutreachDrafterResponse(BaseModel):
     emails: List[OutreachEmail]
     send_results: list = []
 
+class OutreachDrafter(BaseAgent):
     TASK_DESCRIPTION = "Draft personalized, professional outreach emails for shortlisted candidates"
 
     def __init__(self):
@@ -68,7 +69,6 @@ class OutreachDrafterResponse(BaseModel):
         logger.info(f"{self.name} drafting emails for {len(request.scored_candidates)} candidates...")
         
         is_manual = "Intent:" in request.jd.role_title
-        cand_name = self.context.get('cand_name', 'Candidate')
         
         intent_query = request.jd.role_title if is_manual else "reach out to candidate"
         templates = vector_store.search_templates(intent_query, top_k=2)
@@ -89,6 +89,9 @@ Here are some standard company email templates you should try to follow for tone
         import asyncio
         
         async def _draft_single_email(candidate: ScoredCandidate) -> OutreachEmail | None:
+            cand_profile = vector_store.get_candidate(candidate.candidate_id)
+            cand_name = cand_profile.get("metadata", {}).get("name", "Candidate") if cand_profile else "Candidate"
+            
             prompt = f"""
 Candidate ID: {candidate.candidate_id}
 Candidate Name: {cand_name}

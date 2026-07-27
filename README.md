@@ -16,7 +16,7 @@ This document is the **single source of truth** for the project: architecture, t
 | LLM Provider | **Provider-agnostic** | Swap Anthropic / OpenAI / others via config + adapter layer, no vendor lock-in |
 | Structured outputs | **Pydantic v2** everywhere agents hand off data | Enforceable contracts between agents, no fragile string-parsing |
 | Vector search | **ChromaDB** | Local-first, easy to self-host, good enough for candidate-profile scale |
-| Async/rate-limit | **Redis** (queue + token bucket) | Prevents LLM API throttling, decouples request accept from processing |
+| Async/Concurrency | **asyncio native** | Runs purely in FastAPI event loop, no Celery/Redis required |
 | Persistence | **PostgreSQL** | Durable storage of JDs, candidates, scores, outreach emails, eval results |
 | API layer | **FastAPI** (async) | Native async, SSE support, Pydantic-native |
 | Evaluation | **G-Eval (LLM-as-judge)** methodology, custom implementation | Automatic relevance/faithfulness/completeness scoring, gate on low confidence |
@@ -34,7 +34,7 @@ This document is the **single source of truth** for the project: architecture, t
 5. **Candidate Scorer** uses **vector similarity** (ChromaDB, cosine similarity from L2 distance) for broad recall, then an **LLM re-ranker** for precision — the LLM explicitly extracts `matched_skills` vs. `missing_skills` against JD requirements, which acts as the exact-skill check without needing a separate keyword index. Final score = 40% semantic + 60% LLM re-rank.
 6. **Outreach Drafter** writes a personalized cold email per shortlisted candidate. Includes a **RAG component** to search ChromaDB for approved company email templates to ensure brand consistency. HR can also use the **Manual Outreach** tab to draft one-off emails using candidate emails directly, which will be automatically wrapped in standard HTML headers/footers. Includes a **RAG component** to search ChromaDB for approved company email templates to ensure brand consistency. HR can also use the **Manual Outreach** tab to draft one-off emails using candidate emails directly, which will be automatically wrapped in standard HTML headers/footers.
 7. The **Evaluation Layer (G-Eval)** runs after each agent, scoring every output on relevance, faithfulness, and completeness. Anything below the agent's threshold is flagged for **human review** — nothing low-confidence leaves the system unreviewed.
-8. Everything streams live to the frontend over SSE; final artifacts (JDs, scored candidates, emails, eval results) are persisted to Postgres; emails are rate-limited through Redis.
+8. Everything streams live to the frontend over SSE; final artifacts (JDs, scored candidates, emails, eval results) are persisted to Postgres.
 9. **Audit & Review** — All approved emails, rejections, and manual drafts are tracked in an `Audit Log` tab for accountability. The frontend features a full **Apple-style Liquid Glass Dark Mode UI**.
 9. **Audit & Review** — All approved emails, rejections, and manual drafts are tracked in an  tab for accountability. The frontend features a full **Apple-style Liquid Glass Dark Mode UI**.
 
@@ -45,8 +45,7 @@ This document is the **single source of truth** for the project: architecture, t
 ```mermaid
 flowchart TB
     U["Recruiter / API caller"] -->|"POST /pipeline/run"| API["FastAPI Gateway (async)"]
-    API --> Q["Redis Queue + Rate Limiter"]
-    Q --> PLN["Planner Agent"]
+    API --> PLN["Planner Agent (asyncio Task)"]
 
     PLN -->|"task: extract_jd"| JDA["JD Analyser Agent"]
     PLN -->|"task: score_candidates"| CSA["Candidate Scorer Agent"]
@@ -79,7 +78,7 @@ hiring-pipeline/
 ├── README.md                          <- this file
 ├── pyproject.toml
 ├── .env.example
-├── docker-compose.yml                 <- postgres, redis, chromadb, api
+├── docker-compose.yml                 <- postgres, chromadb, api
 │
 ├── app/
 │   ├── main.py                        <- FastAPI entrypoint
@@ -119,7 +118,6 @@ hiring-pipeline/
 │   │
 │   ├── infra/
 │   │   ├── db.py                       <- Postgres models (SQLAlchemy async)
-│   │   ├── redis_client.py             <- rate limiter + task queue
 │   │   ├── vector_store.py             <- ChromaDB client wrapper
 │   │   └── tracing.py                  <- OpenTelemetry setup
 │   │
@@ -214,9 +212,9 @@ Three independent MCP servers, each a separate deployable process (stdio for loc
 |---|---|---|
 | `jd-parser-server` | `parse_raw_jd`, `normalize_skill_taxonomy` | Pure LLM + dynamic LLM skill taxonomy mapping |
 | `candidate-db-server` | `vector_search_candidates`, `get_candidate_profile`, `upsert_candidate` | ChromaDB |
-| `email-server` | `send_outreach_email`, `check_rate_limit` | Redis token bucket (rate limiting) + real domain lookup via ChromaDB metadata |
+| `email-server` | `send_outreach_email` | Placeholder / SendGrid (Needs implementation) |
 
-> **Note on email-server:** Emails are currently stored in-memory rather than sent via SMTP. The rate-limiting (Redis token bucket) and MCP interface are production-ready — swap the `send_outreach_email` tool body for SMTP/SendGrid/SES in production.
+> **Note on email-server:** Emails are currently only generated as drafts and stored in Postgres. To actually send them, the `OutreachDrafter` will need to be connected to an SMTP/SendGrid service.
 
 Design rules: each tool is minimal and single-purpose (avoid sprawling do-everything tools), every tool call is treated as a security boundary (input validation + auth), and servers are versioned/pinned (e.g., `jd-parser-server:v1.0.0`) so schema drift doesn't silently break agents.
 
@@ -279,12 +277,8 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 
 # Infra
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/hiring
-REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5436/hiring
 CHROMA_PERSIST_DIR=./data/chroma
-
-# Rate limiting
-EMAIL_SEND_RATE_PER_MINUTE=10
 
 # Eval thresholds
 EVAL_MIN_CONFIDENCE=0.75
@@ -328,11 +322,11 @@ Follow these steps to spin up the entire pipeline locally:
    ```
 
 3. **Start the Infrastructure (Optional)**
-   If you have Docker, you can spin up Postgres, Redis, and ChromaDB:
+   If you have Docker, you can spin up Postgres and ChromaDB:
    ```bash
    docker-compose up -d
    ```
-   *(Note: The system falls back to SQLite and local Chroma if Postgres/Redis are absent).*
+   *(Note: The system falls back to SQLite and local Chroma if Postgres is absent).*
 
 4. **Run Database Migrations**
    Initialize the database schema (including the HR Authentication tables):
@@ -501,3 +495,10 @@ result = await llm.generate_structured_output(
 ```
 
 This is useful for tuning the cost/quality tradeoff per task — for example, using a small model for JD extraction but a larger one for the G-Eval evaluation layer.
+
+---
+
+## Recent Updates & Fixes (v1.1)
+- **BackgroundTasks Migration**: Removed Celery/Redis dependency in favor of native FastAPI `BackgroundTasks`.
+- **MCP Execution Fixes**: Swapped `uv run` for `sys.executable` to ensure MCP servers launch correctly within the same environment.
+- **State Machine Resilience**: Fixed a subtle SQLAlchemy bug where JSON mutations were not triggering database updates (`flag_modified`), ensuring `PipelineContext` survives pipeline pauses and resumes cleanly.

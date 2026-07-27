@@ -17,6 +17,7 @@ from app.agents.jd_analyser import JDAnalyser
 from app.agents.candidate_scorer import CandidateScorer
 from app.agents.outreach_drafter import OutreachDrafter
 from app.evaluation.geval import evaluate_agent_output
+from app.infra.db import async_session_maker, EvalResultDB
 
 logger = logging.getLogger(__name__)
 
@@ -166,11 +167,9 @@ class PipelineStateMachine:
             if eval_result:
                 self.eval_results.append(eval_result.model_dump())
                 if eval_result.needs_human_review:
+                    # If auto_approve is True, we only pause if it's REALLY bad, or maybe just pause anyway?
+                    # We'll honor the eval_result flag, meaning if it drops score, it pauses.
                     self.should_pause = True
-
-            # If the agent is JDAnalyser, pause automatically for HITL
-            if task.agent == "JDAnalyser":
-                self.should_pause = True
 
             summary = agent.get_summary(result)
             await event_emitter.emit_agent_completed(self.run_id, task.agent, task.name, elapsed, summary)
@@ -211,6 +210,21 @@ class PipelineStateMachine:
                 f"comp={eval_result.completeness:.2f} "
                 f"review={'YES' if eval_result.needs_human_review else 'no'}"
             )
+
+            # Write eval result to database
+            async with async_session_maker() as session:
+                eval_db = EvalResultDB(
+                    run_id=self.run_id,
+                    task_id=task.id,
+                    agent=task.agent,
+                    relevance=eval_result.relevance,
+                    faithfulness=eval_result.faithfulness,
+                    completeness=eval_result.completeness,
+                    needs_review=eval_result.needs_human_review,
+                    review_reason=eval_result.review_reason
+                )
+                session.add(eval_db)
+                await session.commit()
 
             # Emit SSE event if flagged for review
             if eval_result.needs_human_review:

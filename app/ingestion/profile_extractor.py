@@ -12,20 +12,30 @@ logger = logging.getLogger(__name__)
 
 RESUME_EXTRACTION_PROMPT = """
 You are an expert HR data extraction system. Given a candidate's resume text,
-extract a structured profile with the following fields:
+extract a structured profile. Follow these field instructions EXACTLY:
 
 - **name**: The candidate's full name.
 - **email**: The candidate's email address. If not found, return empty string.
-- **current_title**: Their most recent or current job title.
-- **skills**: A comprehensive list of technical and professional skills mentioned.
+- **current_title**: Their most recent or current job title or professional headline.
+- **skills**: A JSON array of individual skill strings. This is the MOST IMPORTANT field.
+  Extract EVERY technical skill, programming language, framework, library, tool, platform,
+  methodology, and soft skill mentioned anywhere in the resume — in the skills section,
+  work experience descriptions, project descriptions, and certifications.
+  Each skill must be a separate string in the array (e.g. ["Python", "FastAPI", "Docker"]).
+  This field must NEVER be empty if the resume mentions any skills at all.
 - **years_of_experience**: Total years of professional experience (estimate from work history dates; 0 if unclear).
 - **previous_companies**: List of companies they've worked at (most recent first).
-- **projects**: List of notable projects, achievements, or open-source contributions mentioned.
+- **projects**: List of notable project NAMES or titles mentioned in the resume.
+  Extract just the project name/title as a short string, not the full description.
 - **position_applied**: Leave as empty string (will be set by the system).
-- **summary**: A concise 2-3 sentence professional summary synthesized from the resume.
+- **summary**: A concise 2-3 sentence professional summary. Do NOT list skills here —
+  skills belong ONLY in the "skills" field. The summary should describe the candidate's
+  career trajectory, domain expertise, and key achievements in prose form.
 
 Rules:
 - Extract ONLY what is explicitly stated in the resume. Do NOT invent or hallucinate details.
+- CRITICAL: Skills MUST go in the "skills" array field, NOT in the "summary" field.
+  The summary should contain zero skill names — only career narrative.
 - For skills, include both explicitly listed skills and skills clearly implied by work experience.
 - For years_of_experience, calculate from the earliest employment date to present if dates are given.
 - If the email is missing, return an empty string — do NOT invent one.

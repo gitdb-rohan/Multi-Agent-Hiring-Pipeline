@@ -68,6 +68,37 @@ class CandidateManualInput(BaseModel):
     position_applied: str = Field(default="", description="Position applied for")
 
 
+def _extract_skills_from_document(doc: str) -> list[str]:
+    """Fallback: parse skills from the embedding document text when metadata skills are empty.
+    The document format is: 'Title. Skills: skill1, skill2, ... . Summary...'
+    """
+    import re
+    match = re.search(r'Skills:\s*([^.]+)\.', doc)
+    if match:
+        raw = match.group(1)
+        return [s.strip() for s in raw.split(',') if s.strip()]
+    return []
+
+
+def _build_candidate_out(cid: str, meta: dict, doc: str) -> CandidateOut:
+    """Build a CandidateOut from ChromaDB metadata + document, with skill fallback."""
+    skills_from_meta = meta.get("skills", "").split(",") if meta.get("skills") else []
+    skills = skills_from_meta if skills_from_meta else _extract_skills_from_document(doc)
+    
+    return CandidateOut(
+        id=cid,
+        name=meta.get("name", ""),
+        email=meta.get("email", ""),
+        current_title=meta.get("current_title", ""),
+        skills=skills,
+        years_of_experience=meta.get("years_of_experience", 0),
+        previous_companies=meta.get("previous_companies", "").split(",") if meta.get("previous_companies") else [],
+        projects=meta.get("projects", "").split(",") if meta.get("projects") else [],
+        position_applied=meta.get("position_applied", ""),
+        summary=doc[:200] if doc else "",
+    )
+
+
 # --- Helpers ---
 
 async def _ingest_single_file(
@@ -282,43 +313,45 @@ async def ingest_manual(candidate: CandidateManualInput, hr_email: str = Depends
         )
 
 
-@router.get("/", response_model=List[CandidateOut])
+class CandidateListResponse(BaseModel):
+    total: int
+    candidates: List[CandidateOut]
+
+@router.get("/", response_model=CandidateListResponse)
 async def list_candidates(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default=""),
     hr_email: str = Depends(get_current_hr),
 ):
     """
-    List all candidates currently in the vector store with pagination.
+    List all candidates currently in the vector store with pagination and search.
     Retrieves from ChromaDB (the source of truth for candidate profiles).
     """
-    # ChromaDB's get() with no IDs returns all documents
-    all_results = vector_store.collection.get(
-        include=["documents", "metadatas"],
-        limit=limit,
-        offset=skip,
-    )
+    query_args = {
+        "include": ["documents", "metadatas"],
+        "limit": limit,
+        "offset": skip,
+    }
+    
+    # Need total count for pagination
+    count_args = {}
+    
+    if search:
+        query_args["where_document"] = {"$contains": search}
+        count_args["where_document"] = {"$contains": search}
+
+    all_results = vector_store.collection.get(**query_args)
+    total_count = vector_store.collection.count() if not search else len(vector_store.collection.get(**count_args).get('ids', []))
 
     candidates = []
     if all_results and all_results["ids"]:
         for i, cid in enumerate(all_results["ids"]):
             meta = all_results["metadatas"][i] if all_results["metadatas"] else {}
             doc = all_results["documents"][i] if all_results["documents"] else ""
+            candidates.append(_build_candidate_out(cid, meta, doc))
 
-            candidates.append(CandidateOut(
-                id=cid,
-                name=meta.get("name", ""),
-                email=meta.get("email", ""),
-                current_title="",  # Not stored separately in metadata
-                skills=[],  # Extracted from document text, not stored separately
-                years_of_experience=meta.get("years_of_experience", 0),
-                previous_companies=meta.get("previous_companies", "").split(",") if meta.get("previous_companies") else [],
-                projects=meta.get("projects", "").split(",") if meta.get("projects") else [],
-                position_applied=meta.get("position_applied", ""),
-                summary=doc[:200] if doc else "",
-            ))
-
-    return candidates
+    return CandidateListResponse(total=total_count, candidates=candidates)
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)
@@ -331,15 +364,4 @@ async def get_candidate(candidate_id: str, hr_email: str = Depends(get_current_h
     meta = result.get("metadata", {})
     doc = result.get("document", "")
 
-    return CandidateOut(
-        id=result["id"],
-        name=meta.get("name", ""),
-        email=meta.get("email", ""),
-        current_title="",
-        skills=[],
-        years_of_experience=meta.get("years_of_experience", 0),
-        previous_companies=meta.get("previous_companies", "").split(",") if meta.get("previous_companies") else [],
-        projects=meta.get("projects", "").split(",") if meta.get("projects") else [],
-        position_applied=meta.get("position_applied", ""),
-        summary=doc[:200] if doc else "",
-    )
+    return _build_candidate_out(result["id"], meta, doc)

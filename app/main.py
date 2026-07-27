@@ -24,6 +24,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    from app.infra.db import engine, Base
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
 from app.api import routes_pipeline, routes_review, routes_candidates, routes_audit, auth
 
 # Include routers

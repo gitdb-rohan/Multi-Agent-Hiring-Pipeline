@@ -37,6 +37,8 @@ class CandidateProfile(BaseModel):
         return {
             "name": self.name,
             "email": self.email,
+            "current_title": self.current_title,
+            "skills": ",".join(self.skills),
             "years_of_experience": self.years_of_experience,
             "previous_companies": ",".join(self.previous_companies),
             "projects": ",".join(self.projects),

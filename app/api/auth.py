@@ -12,7 +12,7 @@ from app.infra.db import HRUser
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def hash_password(password: str) -> str:
@@ -68,8 +68,11 @@ async def get_current_hr(
 ) -> str:
     """
     Dependency to validate the token and return the HR's email.
+    Supports both Authorization header and query parameter (for SSE).
     """
-    token = credentials.credentials
+    token = credentials.credentials if credentials else request.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         email: str = payload.get("sub")

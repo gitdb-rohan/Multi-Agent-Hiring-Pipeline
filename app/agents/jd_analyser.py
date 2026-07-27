@@ -10,6 +10,7 @@ from mcp.client.stdio import stdio_client
 
 from app.agents.base import BaseAgent, with_retry
 from app.schemas.jd import ExtractedJD
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,8 @@ class JDAnalyser(BaseAgent):
         # In a real deployed environment, this might point to a binary or an HTTP SSE endpoint.
         # Here we run the server script directly via stdio.
         self.server_params = StdioServerParameters(
-            command="uv",
-            args=["run", "python", "-m", "app.mcp_servers.jd_parser_server.server"],
+            command=sys.executable,
+            args=["-m", "app.mcp_servers.jd_parser_server.server"],
             env=None # Inherit current environment which has OPENAI_API_KEY
         )
 
